@@ -9,7 +9,7 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
-
+//
 static const char* WESTERN_NOTES[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
 // Standard Swara Dropdown Choices
