@@ -1,0 +1,89 @@
+name: Build Qt6 Multi-Platform
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            qt_arch: win64_msvc2019_64
+            output_name: Harmonium-Windows
+          - os: macos-latest
+            qt_arch: clang_64
+            output_name: Harmonium-MacOS
+          - os: ubuntu-22.04
+            qt_arch: gcc_64
+            output_name: Harmonium-Linux
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Qt6
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '6.6.1'
+        host: ${{ runner.os == 'Windows' && 'windows' || runner.os == 'macOS' && 'mac' || 'linux' }}
+        target: 'desktop'
+        arch: ${{ matrix.qt_arch }}
+        modules: 'qtmultimedia'
+
+    - name: Install Linux Dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libxcb-cursor0 libglu1-mesa-dev libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libpulse-dev
+
+    - name: Configure CMake
+      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build Project
+      run: cmake --build build --config Release
+
+    # --- WINDOWS DEPLOY (Fixed Name) ---
+    - name: Deploy Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        windeployqt build/Release/Harmonium.exe
+
+    # --- MACOS DEPLOY (Fixed Name) ---
+    - name: Deploy MacOS
+      if: runner.os == 'macOS'
+      run: |
+        macdeployqt build/Harmonium.app -dmg
+
+    # --- LINUX DEPLOY (Fixed Name) ---
+    - name: Deploy Linux
+      if: runner.os == 'Linux'
+      run: |
+        # 1. Download linuxdeployqt
+        wget -c -nv "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage"
+        chmod a+x linuxdeployqt-continuous-x86_64.AppImage
+        
+        # 2. Create the metadata files (Fixed Name and Exec)
+        echo -e "[Desktop Entry]\nType=Application\nName=Harmonium\nExec=Harmonium\nIcon=icon\nCategories=Utility;" > build/Harmonium.desktop
+        touch build/icon.png
+        
+        # 3. Run deployment
+        export OUTPUT=Harmonium-x86_64.AppImage
+        export IGNORE_LINUXDEPLOYQT_ERRORS=1
+        ./linuxdeployqt-continuous-x86_64.AppImage build/Harmonium.desktop -appimage
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.output_name }}
+        path: |
+          build/Release/
+          build/*.dmg
+          *.AppImage
