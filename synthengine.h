@@ -12,6 +12,7 @@
 #include "effect.h"
 #include "projectio.h"
 #include "xpressive_parser.h"
+#include "midireader.h"
 
 class SynthEngine : public QIODevice {
     Q_OBJECT
@@ -21,6 +22,8 @@ public:
     ~SynthEngine() override;
 
     static QString defaultHarmoniumFormula();
+
+    void setMidiInterface(MidiReader* midi) { m_midi = midi; }
 
     void loadSong(const MmpSong& song);
     MmpSong getSongSnapshot();
@@ -35,6 +38,10 @@ public:
     void addTalaTheka(const TalaTheka& newTala);
     void updateHarmoniumSong(int songIdx, const HarmoniumSong& updatedSong);
     void addHarmoniumSong(const HarmoniumSong& newSong);
+
+    // Randomisers (updates active slot in memory and compiles immediately)
+    HarmoniumSong randomiseCurrentRagaSong();
+    TalaTheka randomiseCurrentTalaTheka();
 
     void auditionTrack(int trackIdx);
     void auditionBolByName(const QString& bolText);
@@ -83,8 +90,33 @@ public:
     bool isEqEnabled() const { return m_eqEnabled.load(); }
     bool isReverbEnabled() const { return m_reverbEnabled.load(); }
 
-    void noteOn(int midiNote, int velocity);
-    void noteOff(int midiNote);
+    // MIDI In / Out Configuration
+    void setMidiInEnabled(bool en) { m_midiInEnabled.store(en); }
+    bool isMidiInEnabled() const { return m_midiInEnabled.load(); }
+    // In Mode: 0 = Dual Ch (Harm + Drums), 1 = Split (<52 Drum, >=52 Harm), 2 = Harm Only, 3 = Drums Only
+    void setMidiInMode(int mode) { m_midiInMode.store(std::clamp(mode, 0, 3)); }
+    int getMidiInMode() const { return m_midiInMode.load(); }
+    // Channels: -1 = Any, 0..15 = MIDI Ch 1..16
+    void setMidiHarmChannel(int ch) { m_midiHarmChannel.store( std::clamp(ch, -1, 15)); }
+    int getMidiHarmChannel() const { return m_midiHarmChannel.load(); }
+    void setMidiDrumChannel(int ch) { m_midiDrumChannel.store(std::clamp(ch, -1, 15)); }
+    int getMidiDrumChannel() const { return m_midiDrumChannel.load(); }
+
+    void setMidiOutEnabled(bool en);
+    bool isMidiOutEnabled() const { return m_midiOutEnabled.load(); }
+    // Out Mode: 0 = Harm + Drums, 1 = Harm Only, 2 = Drums Only
+    void setMidiOutMode(int mode) { m_midiOutMode.store(std::clamp(mode, 0, 2)); }
+    int getMidiOutMode() const { return m_midiOutMode.load(); }
+
+    // Maps MIDI Note to Drum Track Index (0..15) and vice versa (GM 36..51)
+    static int midiNoteToDrumTrack(int midiNote);
+    static int drumTrackToMidiNote(int trackIdx) { return 36 + std::clamp(trackIdx, 0, 15); }
+
+    void handleIncomingMidi(int channel, int midiNote, int velocity, bool isNoteOn);
+    void triggerDrumTrackFromMidi(int trackIdx, int velocity);
+
+    void noteOn(int midiNote, int velocity, bool fromExternalMidi = false);
+    void noteOff(int midiNote, bool fromExternalMidi = false);
 
     bool isSequential() const override { return true; }
     qint64 bytesAvailable() const override;
@@ -104,6 +136,8 @@ private:
         double relTime = 0.0;
         double lastOut1 = 0.0;
         double lastOut2 = 0.0;
+        int midiOutNote = -1;
+        int midiOutChan = 0;
         std::vector<double> intState1;
         std::vector<double> intState2;
     };
@@ -135,11 +169,12 @@ private:
     };
 
     double midiToFreq(int midiNote) const;
-    void triggerTrackVoice(RuntimeTrack& rt, const SongNote& sn, double secPerTick);
+    void triggerTrackVoice(RuntimeTrack& rt, int trackIdx, const SongNote& sn, double secPerTick);
 
     QAudioSink *m_audioSink = nullptr;
     QAudioFormat m_format;
     mutable QMutex m_mutex;
+    MidiReader *m_midi = nullptr;
 
     double m_sampleRate = 22050.0;
     MmpSong m_song;
@@ -163,6 +198,14 @@ private:
     std::atomic<int> m_droneSwaraMode{0};
     std::atomic<bool> m_eqEnabled{true};
     std::atomic<bool> m_reverbEnabled{true};
+
+    std::atomic<bool> m_midiInEnabled{true};
+    std::atomic<int> m_midiInMode{0};       // 0 = Dual Ch, 1 = Split, 2 = Harm Only, 3 = Drums Only
+    std::atomic<int> m_midiHarmChannel{-1}; // -1 = Any (Out defaults to Ch 1 / idx 0)
+    std::atomic<int> m_midiDrumChannel{9};  // 9 = MIDI Channel 10
+
+    std::atomic<bool> m_midiOutEnabled{false};
+    std::atomic<int> m_midiOutMode{0};      // 0 = Harm+Drums, 1 = Harm Only, 2 = Drums Only
 
     std::atomic<int> m_currentTalaIdx{0};
     std::atomic<int> m_currentHarmSongIdx{0};

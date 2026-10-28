@@ -7,11 +7,13 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QRandomGenerator>
 #include <QtXml/QDomDocument>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
 #include <map>
+#include <set>
 
 QVector<int> ProjectIO::parseVibhagDivisions(const QString& divStr, int* outTotalMatras) {
     QVector<int> vibhags;
@@ -79,6 +81,224 @@ bool ProjectIO::parseSwaraToken(const QString& token, int& outMidiKey) {
     if (semi < 0) return false;
     outMidiKey = 60 + octaveShift + semi;
     return true;
+}
+
+static QString midiKeyToSwaraToken(int midiKey) {
+    static const char* SWARA_TABLE[12] = {"S", "r", "R", "g", "G", "m", "M", "P", "d", "D", "n", "N"};
+    int rel = midiKey - 60;
+    int semi = ((rel % 12) + 12) % 12;
+    int oct = static_cast<int>(std::floor(rel / 12.0));
+    QString tok = SWARA_TABLE[semi];
+    if (oct < 0) tok = "'" + tok;
+    else if (oct > 0) tok = tok + "'";
+    return tok;
+}
+
+HarmoniumSong ProjectIO::generateRandomRagaSong(const HarmoniumSong& baseSong) {
+    HarmoniumSong out = baseSong;
+    auto* rng = QRandomGenerator::global();
+
+    // Extract active pitch classes (0..11) from the base Raga composition
+    std::set<int> pitchClasses = {0}; // Always include Sa (0)
+    for (const auto& f : baseSong.forms) {
+        for (const QString& cell : f.swaraCells) {
+            QStringList subs = cell.split(' ', Qt::SkipEmptyParts);
+            for (const QString& sub : subs) {
+                int k = 60;
+                if (parseSwaraToken(sub, k)) {
+                    pitchClasses.insert(((k - 60) % 12 + 12) % 12);
+                }
+            }
+        }
+    }
+    // Fallback to Bilawal scale if fewer than 5 notes were found
+    if (pitchClasses.size() < 5) {
+        pitchClasses = {0, 2, 4, 5, 7, 9, 11};
+    }
+
+    // Build a multi-octave scale ladder from Mandra 'P (55) to Tara G' (76)
+    std::vector<int> ladder;
+    for (int midi = 55; midi <= 76; ++midi) {
+        int pc = ((midi - 60) % 12 + 12) % 12;
+        if (pitchClasses.count(pc)) {
+            ladder.push_back(midi);
+        }
+    }
+
+    auto findClosestIdx = [&](int targetMidi) -> int {
+        int bestIdx = 0;
+        int bestDist = 999;
+        for (int i = 0; i < static_cast<int>(ladder.size()); ++i) {
+            int d = std::abs(ladder[i] - targetMidi);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = i;
+            }
+        }
+        return bestIdx;
+    };
+
+    int saIdx = findClosestIdx(60);
+    int paIdx = findClosestIdx(67);
+    int highSaIdx = findClosestIdx(72);
+
+    int totalMatras = 0;
+    QVector<int> vibhags = parseVibhagDivisions(out.divisions, &totalMatras);
+    if (out.forms.empty()) {
+        out.forms = {{"Form A (Sthayi)", 4, {}}, {"Form B (Antara)", 4, {}}};
+    }
+
+    for (size_t fIdx = 0; fIdx < out.forms.size(); ++fIdx) {
+        SongForm& form = out.forms[fIdx];
+        bool isAntara = (fIdx > 0);
+        int numRows = std::max(2, form.numRows);
+        form.swaraCells.clear();
+
+        // Register bounds for Sthayi vs Antara
+        int minIdx = isAntara ? std::max(0, saIdx + 1) : 0;
+        int maxIdx = isAntara ? static_cast<int>(ladder.size()) - 1 : std::min(static_cast<int>(ladder.size()) - 1, highSaIdx);
+        int curIdx = isAntara ? paIdx : saIdx;
+
+        for (int r = 0; r < numRows; ++r) {
+            bool isLastRow = (r == numRows - 1);
+            int matraInRow = 0;
+
+            for (int v = 0; v < vibhags.size(); ++v) {
+                int vLen = vibhags[v];
+                for (int m = 0; m < vLen; ++m) {
+                    int remainingInRow = totalMatras - 1 - matraInRow;
+
+                    // Final cadence of the Form: resolve smoothly to Madhya Sa (or Tara Sa in Antara row 0)
+                    if (isLastRow && remainingInRow == 0) {
+                        form.swaraCells.push_back("-");
+                    } else if (isLastRow && remainingInRow == 1) {
+                        curIdx = saIdx;
+                        form.swaraCells.push_back("S");
+                    } else if (isLastRow && remainingInRow == 2) {
+                        curIdx = std::clamp(saIdx + (rng->bounded(2) == 0 ? 1 : -1), 0, static_cast<int>(ladder.size()) - 1);
+                        form.swaraCells.push_back(midiKeyToSwaraToken(ladder[curIdx]));
+                    } else if (isAntara && r == 0 && v == 1 && m == 0) {
+                        // Antara signature: reach and sustain Tara Sa (S') in the first row
+                        curIdx = highSaIdx;
+                        form.swaraCells.push_back("S'");
+                    } else if (isAntara && r == 0 && v == 1 && m == 1) {
+                        form.swaraCells.push_back("-");
+                    } else {
+                        int roll = rng->bounded(100);
+                        // Sustain '-' on non-initial beat of a vibhag (22% chance)
+                        if (m > 0 && roll < 22) {
+                            form.swaraCells.push_back("-");
+                        } else if (m > 0 && roll >= 22 && roll < 34) {
+                            // Graceful 2-note ornamentation (Alankar/Murki) on weak beat
+                            int step1 = (rng->bounded(2) == 0) ? 1 : -1;
+                            int idx1 = std::clamp(curIdx + step1, minIdx, maxIdx);
+                            int idx2 = std::clamp(idx1 + ((rng->bounded(2) == 0) ? 1 : -1), minIdx, maxIdx);
+                            curIdx = idx2;
+                            form.swaraCells.push_back(midiKeyToSwaraToken(ladder[idx1]) + " " + midiKeyToSwaraToken(ladder[idx2]));
+                        } else {
+                            // Stepwise melodic motion (80% step of +/-1, 20% leap of +/-2)
+                            int delta = 0;
+                            int dirRoll = rng->bounded(100);
+                            if (dirRoll < 42) delta = 1;
+                            else if (dirRoll < 84) delta = -1;
+                            else if (dirRoll < 92) delta = 2;
+                            else delta = -2;
+
+                            // Gently bias towards high Sa in early Antara, or towards Madhya Sa in final row
+                            if (isAntara && r == 0 && curIdx < highSaIdx) delta = 1;
+                            if (isLastRow && curIdx > saIdx + 1) delta = -1;
+
+                            curIdx = std::clamp(curIdx + delta, minIdx, maxIdx);
+                            form.swaraCells.push_back(midiKeyToSwaraToken(ladder[curIdx]));
+                        }
+                    }
+                    matraInRow++;
+                }
+            }
+        }
+    }
+
+    QString baseName = out.ragaName.isEmpty() ? out.title : out.ragaName;
+    out.title = QString("%1 - Gen #%2").arg(baseName).arg(rng->bounded(100, 999));
+    return out;
+}
+
+TalaTheka ProjectIO::generateRandomTalaTheka(const TalaTheka& baseTala) {
+    TalaTheka out = baseTala;
+    auto* rng = QRandomGenerator::global();
+
+    int totalMatras = 0;
+    QVector<int> vibhags = parseVibhagDivisions(out.divisions, &totalMatras);
+    QStringList taliLabels = computeVibhagTaliKhaliLabels(vibhags);
+
+    static const QStringList SAM_BOLS = {"Dha", "Dhin", "Dha", "Dhin"};
+    static const QStringList TALI_START_BOLS = {"Dha", "Dhin", "Ge", "Dha"};
+    static const QStringList TALI_BODY_BOLS = {"Dhin", "Dha", "Ge", "Na", "Ti", "Ta", "Dha Ge", "Ta Dhin", "Ge Ti"};
+    static const QStringList KHALI_START_BOLS = {"Ti", "Ta", "Na", "Ka"};
+    static const QStringList KHALI_BODY_BOLS = {"Ti", "Ta", "Na", "Ka", "Ti Re", "Ka Ti", "Ta Ti", "-"};
+    static const QStringList CADENCE_PENULTIMATE = {"Ti Re", "Dha Ge", "Ti Re Ka Ta", "Ka Dha", "Ta Dhin"};
+    static const QStringList CADENCE_FINAL = {"Na", "Ta", "Dha", "Dhin", "Ti Re Ka Ta"};
+
+    out.bolCells.clear();
+    out.kartalCells.clear();
+
+    int globalMatra = 0;
+    for (int v = 0; v < vibhags.size(); ++v) {
+        int vLen = vibhags[v];
+        bool isSamVibhag = (v == 0);
+        bool isKhaliVibhag = (taliLabels[v] == "0");
+
+        for (int m = 0; m < vLen; ++m) {
+            int remaining = totalMatras - 1 - globalMatra;
+            QString bol = "Dha";
+            QString kartal = "Kartal Closed";
+
+            if (isSamVibhag && m == 0) {
+                // Sam (Beat 1): Heavy resonant stroke + Kartal Open
+                bol = SAM_BOLS[rng->bounded(SAM_BOLS.size())];
+                kartal = "Kartal Open";
+            } else if (remaining == 0) {
+                // Final Matra of cycle: Cadential pickup into Sam
+                bol = CADENCE_FINAL[rng->bounded(CADENCE_FINAL.size())];
+                kartal = bol.contains(' ') ? "Closed+Closed" : "Kartal Closed";
+            } else if (remaining == 1 && totalMatras >= 6 && rng->bounded(100) < 65) {
+                // Penultimate Matra: Tirakita / Dha Ge cadence setup
+                bol = CADENCE_PENULTIMATE[rng->bounded(CADENCE_PENULTIMATE.size())];
+                kartal = bol.contains(' ') ? "Closed+Closed" : "Kartal Closed";
+            } else if (m == 0) {
+                // Start of a Vibhag (Tali vs Khali)
+                if (isKhaliVibhag) {
+                    bol = KHALI_START_BOLS[rng->bounded(KHALI_START_BOLS.size())];
+                    kartal = "Kartal Closed";
+                } else {
+                    bol = TALI_START_BOLS[rng->bounded(TALI_START_BOLS.size())];
+                    kartal = "Kartal Open";
+                }
+            } else {
+                // Inner beats of a Vibhag
+                if (isKhaliVibhag) {
+                    // Second half of Khali vibhag can re-introduce bass (Baya) to build towards next Tali
+                    if (m >= vLen / 2 && rng->bounded(100) < 55) {
+                        bol = TALI_BODY_BOLS[rng->bounded(TALI_BODY_BOLS.size())];
+                    } else {
+                        bol = KHALI_BODY_BOLS[rng->bounded(KHALI_BODY_BOLS.size())];
+                    }
+                    kartal = (rng->bounded(100) < 45) ? "-" : "Kartal Closed";
+                } else {
+                    bol = TALI_BODY_BOLS[rng->bounded(TALI_BODY_BOLS.size())];
+                    if (bol.contains(' ')) kartal = "Closed+Closed";
+                    else kartal = (rng->bounded(100) < 25) ? "-" : "Kartal Closed";
+                }
+            }
+
+            out.bolCells.push_back(bol);
+            out.kartalCells.push_back(kartal);
+            globalMatra++;
+        }
+    }
+
+    out.name = QString("Prakar %1M #%2").arg(totalMatras).arg(rng->bounded(100, 999));
+    return out;
 }
 
 void ProjectIO::compileTrackAsts(MmpTrack& trk) {

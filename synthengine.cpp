@@ -13,6 +13,15 @@ QString SynthEngine::defaultHarmoniumFormula() {
     return BuiltInPresets::defaultHarmoniumO1();
 }
 
+int SynthEngine::midiNoteToDrumTrack(int midiNote) {
+    // Direct GM mapping: 36..51 (C2..D#3) -> Tracks 0..15
+    if (midiNote >= 36 && midiNote < 52) return midiNote - 36;
+    // Middle C convenience mapping: 60..75 (C4..D#5) -> Tracks 0..15
+    if (midiNote >= 60 && midiNote < 76) return midiNote - 60;
+    // Wrap any other octave cleanly across the 16 percussion/shankha tracks
+    return ((midiNote - 36) % 16 + 16) % 16;
+}
+
 SynthEngine::SynthEngine(QObject *parent)
     : QIODevice(parent), m_eq(22050.0), m_reverb(22050.0) {
 
@@ -48,6 +57,13 @@ SynthEngine::~SynthEngine() {
         m_audioSink->stop();
     }
     close();
+}
+
+void SynthEngine::setMidiOutEnabled(bool en) {
+    m_midiOutEnabled.store(en);
+    if (!en && m_midi) {
+        m_midi->sendAllNotesOff();
+    }
 }
 
 void SynthEngine::setDroneEnabled(bool enabled) {
@@ -102,6 +118,7 @@ void SynthEngine::loadSong(const MmpSong& song) {
 
         for (auto& v : m_runtimeTracks[i].voices) {
             v.active = false;
+            v.midiOutNote = -1;
             v.intState1.assign(std::max(16, m_runtimeTracks[i].spec.numIntegrators), 0.0);
             v.intState2.assign(std::max(16, m_runtimeTracks[i].spec.numIntegrators), 0.0);
         }
@@ -138,6 +155,7 @@ void SynthEngine::selectHarmoniumSong(int songIndex) {
 
     int tIdx = m_currentTalaIdx.load();
     if (tIdx >= 0 && tIdx < static_cast<int>(m_song.talas.size())) {
+        m_song.totalLoopTicks = m_song.talas[tIdx].loopTicks;
         for (size_t t = 0; t < m_runtimeTracks.size() && t < m_song.talas[tIdx].trackNotes.size(); ++t) {
             m_runtimeTracks[t].spec.notes = m_song.talas[tIdx].trackNotes[t];
         }
@@ -200,12 +218,47 @@ void SynthEngine::addHarmoniumSong(const HarmoniumSong& newSong) {
     }
 }
 
+HarmoniumSong SynthEngine::randomiseCurrentRagaSong() {
+    QMutexLocker locker(&m_mutex);
+    int sIdx = std::clamp(m_currentHarmSongIdx.load(), 0, static_cast<int>(m_song.harmoniumSongs.size()) - 1);
+    HarmoniumSong gen = ProjectIO::generateRandomRagaSong(m_song.harmoniumSongs[sIdx]);
+    m_song.harmoniumSongs[sIdx] = gen;
+    ProjectIO::rebuildCompiledPatterns(m_song);
+
+    int curTala = m_currentTalaIdx.load();
+    if (curTala >= 0 && curTala < static_cast<int>(m_song.talas.size())) {
+        m_song.totalLoopTicks = m_song.talas[curTala].loopTicks;
+        for (size_t t = 0; t < m_runtimeTracks.size() && t < m_song.talas[curTala].trackNotes.size(); ++t) {
+            m_runtimeTracks[t].spec.notes = m_song.talas[curTala].trackNotes[t];
+        }
+    }
+    m_songTickPos = 0.0;
+    m_lastTriggeredTick = -1;
+    return gen;
+}
+
+TalaTheka SynthEngine::randomiseCurrentTalaTheka() {
+    QMutexLocker locker(&m_mutex);
+    int tIdx = std::clamp(m_currentTalaIdx.load(), 0, static_cast<int>(m_song.talaThekas.size()) - 1);
+    TalaTheka gen = ProjectIO::generateRandomTalaTheka(m_song.talaThekas[tIdx]);
+    m_song.talaThekas[tIdx] = gen;
+    ProjectIO::rebuildCompiledPatterns(m_song);
+    m_drumLoopTicks.store(m_song.drumLoopTicks);
+
+    for (size_t t = 0; t < m_runtimeTracks.size() && t < m_song.talas[tIdx].trackNotes.size(); ++t) {
+        m_runtimeTracks[t].spec.notes = m_song.talas[tIdx].trackNotes[t];
+    }
+    m_songTickPos = 0.0;
+    m_lastTriggeredTick = -1;
+    return gen;
+}
+
 void SynthEngine::auditionTrack(int trackIdx) {
     QMutexLocker locker(&m_mutex);
     if (trackIdx < 0 || trackIdx >= static_cast<int>(m_runtimeTracks.size())) return;
     SongNote sn{0, 48, 69, 1.0f};
     double secPerTick = 60.0 / (std::max(40, m_bpm.load()) * 48.0);
-    triggerTrackVoice(m_runtimeTracks[trackIdx], sn, secPerTick);
+    triggerTrackVoice(m_runtimeTracks[trackIdx], trackIdx, sn, secPerTick);
 }
 
 void SynthEngine::auditionBolByName(const QString& bolText) {
@@ -213,10 +266,10 @@ void SynthEngine::auditionBolByName(const QString& bolText) {
     QString firstBol = bolText.trimmed().split(' ', Qt::SkipEmptyParts).value(0).toLower();
     if (firstBol.isEmpty() || firstBol == "-") return;
     double secPerTick = 60.0 / (std::max(40, m_bpm.load()) * 48.0);
-    for (auto& rt : m_runtimeTracks) {
-        if (rt.spec.name.toLower() == firstBol) {
+    for (size_t i = 0; i < m_runtimeTracks.size(); ++i) {
+        if (m_runtimeTracks[i].spec.name.toLower() == firstBol) {
             SongNote sn{0, 48, 69, 1.0f};
-            triggerTrackVoice(rt, sn, secPerTick);
+            triggerTrackVoice(m_runtimeTracks[i], static_cast<int>(i), sn, secPerTick);
             break;
         }
     }
@@ -229,10 +282,11 @@ void SynthEngine::auditionSwara(const QString& swaraText) {
 
     QMutexLocker locker(&m_mutex);
     double secPerTick = 60.0 / (std::max(40, m_bpm.load()) * 48.0);
-    for (auto& rt : m_runtimeTracks) {
+    for (size_t i = 0; i < m_runtimeTracks.size(); ++i) {
+        auto& rt = m_runtimeTracks[i];
         if (!rt.spec.isBeatTrack && rt.spec.name.contains("Harmonium", Qt::CaseInsensitive)) {
             SongNote sn{0, 36, midiKey, 0.9f};
-            triggerTrackVoice(rt, sn, secPerTick);
+            triggerTrackVoice(rt, static_cast<int>(i), sn, secPerTick);
             m_detectedMidiNote.store(midiKey + m_saSemitone.load());
             break;
         }
@@ -267,7 +321,13 @@ void SynthEngine::startWithCountdown(bool enableCountdown) {
     m_isPaused.store(false);
 
     for (auto& rt : m_runtimeTracks) {
-        for (auto& v : rt.voices) v.active = false;
+        for (auto& v : rt.voices) {
+            if (v.active && v.midiOutNote >= 0 && m_midi) {
+                m_midi->sendNoteOff(v.midiOutChan, v.midiOutNote);
+            }
+            v.active = false;
+            v.midiOutNote = -1;
+        }
     }
 
     if (enableCountdown) {
@@ -288,7 +348,16 @@ void SynthEngine::stopPlayback() {
     m_songTickPos = 0.0;
     m_lastTriggeredTick = -1;
     for (auto& rt : m_runtimeTracks) {
-        for (auto& v : rt.voices) v.active = false;
+        for (auto& v : rt.voices) {
+            if (v.active && v.midiOutNote >= 0 && m_midi) {
+                m_midi->sendNoteOff(v.midiOutChan, v.midiOutNote);
+            }
+            v.active = false;
+            v.midiOutNote = -1;
+        }
+    }
+    if (m_midi && m_midiOutEnabled.load()) {
+        m_midi->sendAllNotesOff();
     }
 }
 
@@ -333,13 +402,74 @@ void SynthEngine::setReverbEnabled(bool en) {
     m_reverb.enabled = en;
 }
 
-void SynthEngine::noteOn(int midiNote, int velocity) {
+void SynthEngine::triggerDrumTrackFromMidi(int trackIdx, int velocity) {
+    QMutexLocker locker(&m_mutex);
+    if (trackIdx < 0 || trackIdx >= static_cast<int>(m_runtimeTracks.size())) return;
+    // Prevent triggering the melodic Harmonium_Bellows track (index 16) as a drum
+    if (m_runtimeTracks[trackIdx].spec.name.contains("Harmonium", Qt::CaseInsensitive)) return;
+
+    float vel = std::clamp(velocity / 127.0f, 0.15f, 1.0f);
+    int key = m_runtimeTracks[trackIdx].spec.isBeatTrack ? 69 : 60;
+    SongNote sn{0, 48, key, vel};
+    double secPerTick = 60.0 / (std::max(40, m_bpm.load()) * 48.0);
+    triggerTrackVoice(m_runtimeTracks[trackIdx], trackIdx, sn, secPerTick);
+}
+
+void SynthEngine::handleIncomingMidi(int channel, int midiNote, int velocity, bool isNoteOn) {
+    if (!m_midiInEnabled.load()) return;
+
+    int mode = m_midiInMode.load();
+    int harmCh = m_midiHarmChannel.load();
+    int drumCh = m_midiDrumChannel.load();
+
+    bool routeToHarm = false;
+    bool routeToDrum = false;
+
+    if (mode == 0) {
+        // Dual Channel Mode (Harmonium + Drums on selectable channels)
+        bool drumMatch = (drumCh == -1) || (channel == drumCh);
+        bool harmMatch = (harmCh == -1) ? (channel != drumCh || drumCh == -1) : (channel == harmCh);
+        routeToDrum = drumMatch;
+        routeToHarm = harmMatch;
+    } else if (mode == 1) {
+        // Split Keyboard Mode: keys < 52 (C2..D#3) play Drums, keys >= 52 (E3+) play Harmonium
+        if (midiNote < 52) routeToDrum = true;
+        else routeToHarm = true;
+    } else if (mode == 2) {
+        // Harmonium Only
+        if (harmCh == -1 || channel == harmCh) routeToHarm = true;
+    } else if (mode == 3) {
+        // Drums Only
+        if (drumCh == -1 || channel == drumCh) routeToDrum = true;
+    }
+
+    if (routeToDrum && isNoteOn) {
+        int trkIdx = midiNoteToDrumTrack(midiNote);
+        triggerDrumTrackFromMidi(trkIdx, velocity);
+    }
+
+    if (routeToHarm) {
+        if (isNoteOn) noteOn(midiNote, velocity, true);
+        else noteOff(midiNote, true);
+    }
+}
+
+void SynthEngine::noteOn(int midiNote, int velocity, bool fromExternalMidi) {
     QMutexLocker locker(&m_mutex);
     int shiftedNote = std::clamp(midiNote + m_octaveShift.load() * 12, 12, 115);
 
     int ragaSrc = m_ragaSourceTrack.load();
     if (!m_isPlaying.load() || !m_harmoniumPresetMode.load() || ragaSrc == -1 || ragaSrc == -2) {
         m_detectedMidiNote.store(shiftedNote);
+    }
+
+    // Forward live touch / PC keyboard notes to MIDI Out if enabled
+    if (!fromExternalMidi && m_midi && m_midiOutEnabled.load()) {
+        int outMode = m_midiOutMode.load();
+        if (outMode == 0 || outMode == 1) {
+            int outCh = (m_midiHarmChannel.load() >= 0) ? m_midiHarmChannel.load() : 0;
+            m_midi->sendNoteOn(outCh, shiftedNote, velocity);
+        }
     }
 
     for (auto& hv : m_harmVoices) {
@@ -363,9 +493,18 @@ void SynthEngine::noteOn(int midiNote, int velocity) {
     slot->intState.fill(0.0);
 }
 
-void SynthEngine::noteOff(int midiNote) {
+void SynthEngine::noteOff(int midiNote, bool fromExternalMidi) {
     QMutexLocker locker(&m_mutex);
     int shiftedNote = std::clamp(midiNote + m_octaveShift.load() * 12, 12, 115);
+
+    if (!fromExternalMidi && m_midi && m_midiOutEnabled.load()) {
+        int outMode = m_midiOutMode.load();
+        if (outMode == 0 || outMode == 1) {
+            int outCh = (m_midiHarmChannel.load() >= 0) ? m_midiHarmChannel.load() : 0;
+            m_midi->sendNoteOff(outCh, shiftedNote);
+        }
+    }
+
     for (auto& hv : m_harmVoices) {
         if (hv.active && hv.held && hv.midiNote == shiftedNote) {
             hv.held = false;
@@ -378,9 +517,15 @@ double SynthEngine::midiToFreq(int midiNote) const {
     return m_a4Hz.load() * std::pow(2.0, (midiNote - 69) / 12.0);
 }
 
-void SynthEngine::triggerTrackVoice(RuntimeTrack& rt, const SongNote& sn, double secPerTick) {
+void SynthEngine::triggerTrackVoice(RuntimeTrack& rt, int trackIdx, const SongNote& sn, double secPerTick) {
     auto& v = rt.voices[rt.nextVoice];
     rt.nextVoice = (rt.nextVoice + 1) % static_cast<int>(rt.voices.size());
+
+    // If stealing an active voice that had a pending MIDI Out note, close it cleanly first
+    if (v.active && v.midiOutNote >= 0 && m_midi) {
+        m_midi->sendNoteOff(v.midiOutChan, v.midiOutNote);
+        v.midiOutNote = -1;
+    }
 
     v.active = true;
     v.key = sn.key;
@@ -393,6 +538,27 @@ void SynthEngine::triggerTrackVoice(RuntimeTrack& rt, const SongNote& sn, double
     v.noteDurSec = (sn.lenTicks > 0) ? (sn.lenTicks * secPerTick) : 0.45;
     std::fill(v.intState1.begin(), v.intState1.end(), 0.0);
     std::fill(v.intState2.begin(), v.intState2.end(), 0.0);
+
+    // Dispatch MIDI Out for sequenced / auditioned track notes
+    if (m_midi && m_midiOutEnabled.load()) {
+        int outMode = m_midiOutMode.load();
+        bool isHarmTrack = !rt.spec.isBeatTrack && rt.spec.name.contains("Harmonium", Qt::CaseInsensitive);
+        int velInt = std::clamp(static_cast<int>(sn.vol * 110.0f), 1, 127);
+
+        if (isHarmTrack && (outMode == 0 || outMode == 1)) {
+            int outCh = (m_midiHarmChannel.load() >= 0) ? m_midiHarmChannel.load() : 0;
+            int outNote = std::clamp(sn.key + m_saSemitone.load(), 0, 127);
+            v.midiOutChan = outCh;
+            v.midiOutNote = outNote;
+            m_midi->sendNoteOn(outCh, outNote, velInt);
+        } else if (!isHarmTrack && (outMode == 0 || outMode == 2)) {
+            int outCh = (m_midiDrumChannel.load() >= 0) ? m_midiDrumChannel.load() : 9;
+            int outNote = drumTrackToMidiNote(trackIdx);
+            v.midiOutChan = outCh;
+            v.midiOutNote = outNote;
+            m_midi->sendNoteOn(outCh, outNote, velInt);
+        }
+    }
 }
 
 qint64 SynthEngine::bytesAvailable() const {
@@ -479,7 +645,7 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
                         int matchTick = rt.spec.isBeatTrack ? drumTick : curTick;
                         for (const auto& sn : rt.spec.notes) {
                             if (sn.startTick == matchTick) {
-                                triggerTrackVoice(rt, sn, secPerTick);
+                                triggerTrackVoice(rt, static_cast<int>(tIdx), sn, secPerTick);
                                 if (ragaSrc == static_cast<int>(tIdx) || (ragaSrc == -1 && !rt.spec.isBeatTrack)) {
                                     m_detectedMidiNote.store(sn.key + saOffset);
                                 }
@@ -498,7 +664,8 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
 
         for (auto& rt : m_runtimeTracks) {
             if (rt.spec.muted || !rt.spec.o1Ast) continue;
-            if (!rt.spec.isBeatTrack && m_isPlaying.load() && !presetHarmoniumOn) continue;
+            if (!rt.spec.isBeatTrack && m_isPlaying.load() && !presetHarmoniumOn &&
+                rt.spec.name.contains("Harmonium", Qt::CaseInsensitive)) continue;
 
             double trkSample = 0.0;
             for (auto& v : rt.voices) {
@@ -507,6 +674,10 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
                 if (!v.released && v.noteTime >= v.noteDurSec) {
                     v.released = true;
                     v.relTime = 0.0;
+                    if (v.midiOutNote >= 0 && m_midi) {
+                        m_midi->sendNoteOff(v.midiOutChan, v.midiOutNote);
+                        v.midiOutNote = -1;
+                    }
                 }
                 if (v.released && v.relTime > std::max(0.35, rt.spec.rel)) {
                     v.active = false;

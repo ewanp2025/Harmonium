@@ -97,6 +97,10 @@ public:
     static QStringList computeVibhagTaliKhaliLabels(const QVector<int>& vibhags);
     static bool parseSwaraToken(const QString& token, int& outMidiKey);
 
+    // Intelligent Raga & Tala Randomisers
+    static HarmoniumSong generateRandomRagaSong(const HarmoniumSong& baseSong);
+    static TalaTheka generateRandomTalaTheka(const TalaTheka& baseTala);
+
     static void rebuildCompiledPatterns(MmpSong& song);
     static bool loadFile(const QString& filePath, MmpSong& outSong);
     static bool loadMmpFile(const QString& filePath, MmpSong& outSong);

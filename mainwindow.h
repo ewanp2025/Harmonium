@@ -67,6 +67,8 @@ private slots:
     void onExportPresetsHeaderClicked();
     void onTalaSelected(int index);
     void onHarmSongSelected(int index);
+    void onRandomiseRagaClicked();
+    void onRandomiseTalaClicked();
     void onBpmChanged(int newBpm);
     void onTuningChanged();
     void onUiTick();
@@ -119,8 +121,10 @@ private:
     QCheckBox* m_chkCountdown = nullptr;
     QLabel* m_lblTopTala = nullptr;
     QComboBox* m_cmbTalaSelector = nullptr;
+    QPushButton* m_btnRandTalaLive = nullptr;
     QLabel* m_lblTopSong = nullptr;
     QComboBox* m_cmbHarmSongSelector = nullptr;
+    QPushButton* m_btnRandRagaLive = nullptr;
     QSpinBox* m_spinBpm = nullptr;
     QPushButton* m_btnLoad = nullptr;
     QPushButton* m_btnSave = nullptr;
@@ -151,6 +155,16 @@ private:
     QPushButton* m_btnReverbToggle = nullptr;
     QLabel* m_lblOctave = nullptr;
 
+    // MIDI In / Out Controls
+    QPushButton* m_btnMidiInToggle = nullptr;
+    QComboBox* m_cmbMidiInMode = nullptr;
+    QLabel* m_lblHarmCh = nullptr;
+    QComboBox* m_cmbMidiHarmCh = nullptr;
+    QLabel* m_lblDrumCh = nullptr;
+    QComboBox* m_cmbMidiDrumCh = nullptr;
+    QPushButton* m_btnMidiOutToggle = nullptr;
+    QComboBox* m_cmbMidiOutMode = nullptr;
+
     TouchPianoWidget* m_pianoWidget = nullptr;
     std::set<int> m_activeNotes;
 
@@ -158,6 +172,7 @@ private:
     QLabel* m_lblHarmEdSong = nullptr;
     QComboBox* m_cmbHarmEdSelect = nullptr;
     QPushButton* m_btnHarmEdNew = nullptr;
+    QPushButton* m_btnHarmEdRandom = nullptr;
     QLabel* m_lblHarmEdName = nullptr;
     QLineEdit* m_txtHarmEdTitle = nullptr;
     QLabel* m_lblHarmEdVibhags = nullptr;
@@ -178,6 +193,7 @@ private:
     QLabel* m_lblTalaEdSelect = nullptr;
     QComboBox* m_cmbTalaEdSelect = nullptr;
     QPushButton* m_btnTalaEdNew = nullptr;
+    QPushButton* m_btnTalaEdRandom = nullptr;
     QLabel* m_lblTalaEdName = nullptr;
     QLineEdit* m_txtTalaEdName = nullptr;
     QLabel* m_lblTalaEdVibhags = nullptr;

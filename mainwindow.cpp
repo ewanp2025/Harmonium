@@ -9,7 +9,7 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
-//
+
 static const char* WESTERN_NOTES[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
 // Standard Swara Dropdown Choices
@@ -24,7 +24,7 @@ static const QStringList STANDARD_SWARA_LIST = {
 // Standard Tala Bol Dropdown Choices
 static const QStringList STANDARD_BOL_LIST = {
     "-", "Dha", "Dhin", "Ge", "Ka", "Na", "Ta", "Ti", "Re",
-    "Ti Re", "Re Ti", "Ta Dhin", "Ta Ti", "Ti Ka", "Ta Ge", "Dha Ge", "Dhin Na", "Ka Ta"
+    "Ti Re", "Re Ti", "Ta Dhin", "Ta Ti", "Ti Ka", "Ta Ge", "Dha Ge", "Dhin Na", "Ka Ta", "Ti Re Ka Ta", "Ka Dha"
 };
 
 static const QStringList STANDARD_KARTAL_LIST = {
@@ -37,7 +37,7 @@ static bool isBlackKey(int midi) {
 }
 
 TouchPianoWidget::TouchPianoWidget(QWidget* parent) : QWidget(parent) {
-    setMinimumHeight(85);
+    setMinimumHeight(72);
 }
 
 void TouchPianoWidget::setSaSemitone(int sa) {
@@ -188,18 +188,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     rebuildTrackAndTalaControls();
     retranslateUi();
 
-    m_midiReader = new MidiReader([this](int note, int vel, bool on) {
-        QMetaObject::invokeMethod(this, [this, note, vel, on]() {
+    m_midiReader = new MidiReader([this](int channel, int note, int vel, bool on) {
+        QMetaObject::invokeMethod(this, [this, channel, note, vel, on]() {
+            if (!m_engine->isMidiInEnabled()) return;
             if (on) {
                 m_activeNotes.insert(note);
-                m_engine->noteOn(note, vel);
             } else {
                 m_activeNotes.erase(note);
-                m_engine->noteOff(note);
             }
+            m_engine->handleIncomingMidi(channel, note, vel, on);
             m_pianoWidget->setActiveNotes(m_activeNotes);
         }, Qt::QueuedConnection);
     }, this);
+
+    m_engine->setMidiInterface(m_midiReader);
 
     connect(m_midiReader, &MidiReader::midiStatusChanged, this, [this](const QString& status) {
         m_lastRawMidiStatus = status;
@@ -213,6 +215,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    m_engine->setMidiInterface(nullptr);
     if (m_midiReader) {
         m_midiReader->stopReader();
         m_midiReader->wait();
@@ -227,13 +230,13 @@ void MainWindow::setupUI() {
         "QWidget { background-color: #16191e; color: #f0f0f0; "
         "font-family: 'Segoe UI', 'Nirmala UI', 'Noto Sans Devanagari', 'Lohit Devanagari', sans-serif; font-size: 11px; }"
         "QTabWidget::pane { border: 1px solid #3a3f4b; }"
-        "QTabBar::tab { background: #252830; color: #ccc; padding: 6px 14px; font-weight: bold; border: 1px solid #3a3f4b; }"
+        "QTabBar::tab { background: #252830; color: #ccc; padding: 5px 12px; font-weight: bold; border: 1px solid #3a3f4b; }"
         "QTabBar::tab:selected { background: #00695c; color: #ffffff; border-bottom: 2px solid #00e5ff; }"
-        "QGroupBox { border: 1px solid #3a3f4b; border-radius: 5px; margin-top: 6px; padding: 3px; font-weight: bold; }"
+        "QGroupBox { border: 1px solid #3a3f4b; border-radius: 5px; margin-top: 6px; padding: 2px; font-weight: bold; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #ffca28; }"
-        "QPushButton { background-color: #2b303c; border: 1px solid #555; border-radius: 4px; padding: 3px 6px; font-weight: bold; min-height: 21px; }"
+        "QPushButton { background-color: #2b303c; border: 1px solid #555; border-radius: 4px; padding: 2px 5px; font-weight: bold; min-height: 20px; }"
         "QPushButton:pressed { background-color: #00acc1; }"
-        "QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit { background-color: #252830; border: 1px solid #555; border-radius: 4px; padding: 2px; min-height: 21px; }"
+        "QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit { background-color: #252830; border: 1px solid #555; border-radius: 4px; padding: 1px 3px; min-height: 20px; }"
         );
 
     // Language Selector in the Top-Right Corner of the Tab Bar
@@ -274,7 +277,9 @@ void MainWindow::retranslateUi() {
     m_btnPause->setText(m_engine->isPaused() ? lang.btnResume : lang.btnPause);
     m_chkCountdown->setText(lang.chkCountdown);
     m_lblTopTala->setText(lang.lblTala);
+    m_btnRandTalaLive->setText(lang.btnRandTala);
     m_lblTopSong->setText(lang.lblSong);
+    m_btnRandRagaLive->setText(lang.btnRandRaga);
     m_btnLoad->setText(lang.btnLoad);
     m_btnSave->setText(lang.btnSave);
 
@@ -324,7 +329,7 @@ void MainWindow::retranslateUi() {
     }
     m_cmbRagaSource->blockSignals(false);
 
-    // Tab 1: Harmonium & DSP Row
+    // Tab 1: Harmonium, MIDI I/O & DSP Row
     m_grpHarm->setTitle(lang.grpHarmTitle);
     m_btnHarmoniumToggle->setText(m_engine->isHarmoniumPresetMode() ? lang.btnHarmPresetOn : lang.btnHarmPresetOff);
     m_btnOctDown->setText(lang.btnOctDown);
@@ -333,6 +338,26 @@ void MainWindow::retranslateUi() {
     m_btnEqToggle->setText(m_engine->isEqEnabled() ? lang.btnEqOn : lang.btnEqOff);
     m_btnReverbToggle->setText(m_engine->isReverbEnabled() ? lang.btnReverbOn : lang.btnReverbOff);
 
+    m_btnMidiInToggle->setText(m_engine->isMidiInEnabled() ? lang.btnMidiInOn : lang.btnMidiInOff);
+    m_cmbMidiInMode->blockSignals(true);
+    m_cmbMidiInMode->setItemText(0, lang.midiInModeDual);
+    m_cmbMidiInMode->setItemText(1, lang.midiInModeSplit);
+    m_cmbMidiInMode->setItemText(2, lang.midiInModeHarm);
+    m_cmbMidiInMode->setItemText(3, lang.midiInModeDrums);
+    m_cmbMidiInMode->blockSignals(false);
+
+    m_lblHarmCh->setText(lang.lblHarmCh);
+    m_lblDrumCh->setText(lang.lblDrumCh);
+    if (m_cmbMidiHarmCh->count() > 0) m_cmbMidiHarmCh->setItemText(0, lang.chAny);
+    if (m_cmbMidiDrumCh->count() > 0) m_cmbMidiDrumCh->setItemText(0, lang.chAny);
+
+    m_btnMidiOutToggle->setText(m_engine->isMidiOutEnabled() ? lang.btnMidiOutOn : lang.btnMidiOutOff);
+    m_cmbMidiOutMode->blockSignals(true);
+    m_cmbMidiOutMode->setItemText(0, lang.midiOutModeBoth);
+    m_cmbMidiOutMode->setItemText(1, lang.midiOutModeHarm);
+    m_cmbMidiOutMode->setItemText(2, lang.midiOutModeDrums);
+    m_cmbMidiOutMode->blockSignals(false);
+
     updateSongTitleFooter();
     updateMidiStatusLabel();
     onUiTick();
@@ -340,6 +365,7 @@ void MainWindow::retranslateUi() {
     // Tab 2: Harmonium Editor
     m_lblHarmEdSong->setText(lang.lblEdSong);
     m_btnHarmEdNew->setText(lang.btnNewSong);
+    m_btnHarmEdRandom->setText(lang.btnEdRandRaga);
     m_lblHarmEdName->setText(lang.lblEdName);
     m_txtHarmEdTitle->setPlaceholderText(lang.txtSongNamePlaceholder);
     m_lblHarmEdVibhags->setText(lang.lblEdVibhags);
@@ -354,6 +380,7 @@ void MainWindow::retranslateUi() {
     // Tab 3: Tala Editor
     m_lblTalaEdSelect->setText(lang.lblSelectTala);
     m_btnTalaEdNew->setText(lang.btnNewTala);
+    m_btnTalaEdRandom->setText(lang.btnEdRandTala);
     m_lblTalaEdName->setText(lang.lblTalaName);
     m_lblTalaEdVibhags->setText(lang.lblVibhagDivs);
     m_btnTalaEdPlay->setText(lang.btnPlayTala);
@@ -396,17 +423,18 @@ void MainWindow::updateMidiStatusLabel() {
 QWidget* MainWindow::createMainPerformanceTab() {
     QWidget* page = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(page);
-    mainLayout->setContentsMargins(5, 4, 5, 4);
-    mainLayout->setSpacing(3);
+    mainLayout->setContentsMargins(4, 3, 4, 3);
+    mainLayout->setSpacing(2);
 
-    // Top Transport, Tala & Harmonium Song Selector Bar
+    // Top Transport, Tala (+ Randomise) & Harmonium Song (+ Randomise) Selector Bar
     QHBoxLayout* topBar = new QHBoxLayout();
+    topBar->setSpacing(3);
     m_btnStartStop = new QPushButton(L().btnStart);
-    m_btnStartStop->setStyleSheet("background-color: #1b5e20; color: white; font-size: 13px; min-width: 75px;");
+    m_btnStartStop->setStyleSheet("background-color: #1b5e20; color: white; font-size: 12px; min-width: 68px;");
     connect(m_btnStartStop, &QPushButton::clicked, this, &MainWindow::onStartStopClicked);
 
     m_btnPause = new QPushButton(L().btnPause);
-    m_btnPause->setStyleSheet("background-color: #e65100; color: white; font-size: 12px; min-width: 60px;");
+    m_btnPause->setStyleSheet("background-color: #e65100; color: white; font-size: 11px; min-width: 54px;");
     connect(m_btnPause, &QPushButton::clicked, this, &MainWindow::onPauseClicked);
 
     m_chkCountdown = new QCheckBox(L().chkCountdown);
@@ -414,22 +442,32 @@ QWidget* MainWindow::createMainPerformanceTab() {
 
     m_lblTopTala = new QLabel(L().lblTala);
     m_cmbTalaSelector = new QComboBox();
+    m_cmbTalaSelector->setMaximumWidth(125);
     m_cmbTalaSelector->setStyleSheet("background-color: #004d40; color: #fff; font-weight: bold;");
     connect(m_cmbTalaSelector, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onTalaSelected);
 
+    m_btnRandTalaLive = new QPushButton(L().btnRandTala);
+    m_btnRandTalaLive->setStyleSheet("background-color: #00796b; color: #ffeb3b; font-weight: bold;");
+    connect(m_btnRandTalaLive, &QPushButton::clicked, this, &MainWindow::onRandomiseTalaClicked);
+
     m_lblTopSong = new QLabel(L().lblSong);
     m_cmbHarmSongSelector = new QComboBox();
+    m_cmbHarmSongSelector->setMaximumWidth(145);
     m_cmbHarmSongSelector->setStyleSheet("background-color: #4a148c; color: #fff; font-weight: bold;");
     connect(m_cmbHarmSongSelector, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onHarmSongSelected);
 
+    m_btnRandRagaLive = new QPushButton(L().btnRandRaga);
+    m_btnRandRagaLive->setStyleSheet("background-color: #6a1b9a; color: #ffeb3b; font-weight: bold;");
+    connect(m_btnRandRagaLive, &QPushButton::clicked, this, &MainWindow::onRandomiseRagaClicked);
+
     QPushButton* btnBpmDown = new QPushButton("-5");
-    btnBpmDown->setFixedWidth(26);
+    btnBpmDown->setFixedWidth(24);
     m_spinBpm = new QSpinBox();
     m_spinBpm->setRange(40, 260);
     m_spinBpm->setValue(m_engine->getBpm());
     m_spinBpm->setSuffix(" BPM");
     QPushButton* btnBpmUp = new QPushButton("+5");
-    btnBpmUp->setFixedWidth(26);
+    btnBpmUp->setFixedWidth(24);
 
     connect(btnBpmDown, &QPushButton::clicked, this, [this]() { m_spinBpm->setValue(m_spinBpm->value() - 5); });
     connect(btnBpmUp, &QPushButton::clicked, this, [this]() { m_spinBpm->setValue(m_spinBpm->value() + 5); });
@@ -448,8 +486,10 @@ QWidget* MainWindow::createMainPerformanceTab() {
     topBar->addWidget(m_chkCountdown);
     topBar->addWidget(m_lblTopTala);
     topBar->addWidget(m_cmbTalaSelector);
+    topBar->addWidget(m_btnRandTalaLive);
     topBar->addWidget(m_lblTopSong);
     topBar->addWidget(m_cmbHarmSongSelector);
+    topBar->addWidget(m_btnRandRagaLive);
     topBar->addWidget(btnBpmDown);
     topBar->addWidget(m_spinBpm);
     topBar->addWidget(btnBpmUp);
@@ -461,10 +501,10 @@ QWidget* MainWindow::createMainPerformanceTab() {
     QHBoxLayout* ragaRow = new QHBoxLayout();
     m_lblRagaPopup = new QLabel(L().swaraPopupFmt.arg(L().swaraNames[0], "C4"));
     m_lblRagaPopup->setAlignment(Qt::AlignCenter);
-    m_lblRagaPopup->setMinimumWidth(175);
+    m_lblRagaPopup->setMinimumWidth(165);
     m_lblRagaPopup->setStyleSheet(
         "background-color: #0d2538; color: #00e5ff; border: 2px solid #00e5ff; "
-        "border-radius: 6px; font-size: 18px; font-weight: bold; padding: 2px;"
+        "border-radius: 6px; font-size: 16px; font-weight: bold; padding: 2px;"
         );
 
     m_grpTuner = new QGroupBox(L().grpTunerTitle);
@@ -538,26 +578,29 @@ QWidget* MainWindow::createMainPerformanceTab() {
     m_trackBtnContainer = new QWidget();
     m_trackBtnLayout = new QGridLayout(m_trackBtnContainer);
     m_trackBtnLayout->setContentsMargins(0, 0, 0, 0);
-    m_trackBtnLayout->setSpacing(3);
+    m_trackBtnLayout->setSpacing(2);
     trkOuter->addWidget(m_trackBtnContainer);
     mainLayout->addWidget(m_grpTracks);
 
-    // Harmonium Mode Switch + Master DSP
+    // Harmonium Mode Switch + Bidirectional MIDI I/O + Master DSP
     m_grpHarm = new QGroupBox(L().grpHarmTitle);
-    QHBoxLayout* harmTop = new QHBoxLayout(m_grpHarm);
-    harmTop->setContentsMargins(4, 2, 4, 2);
+    QVBoxLayout* harmOuter = new QVBoxLayout(m_grpHarm);
+    harmOuter->setContentsMargins(4, 2, 4, 2);
+    harmOuter->setSpacing(2);
 
+    QHBoxLayout* harmTop = new QHBoxLayout();
+    harmTop->setSpacing(3);
     m_btnHarmoniumToggle = new QPushButton(L().btnHarmPresetOn);
-    m_btnHarmoniumToggle->setStyleSheet("background-color: #ef6c00; color: white; font-size: 12px;");
+    m_btnHarmoniumToggle->setStyleSheet("background-color: #ef6c00; color: white; font-size: 11px;");
     connect(m_btnHarmoniumToggle, &QPushButton::clicked, this, [this]() {
         bool presetAutoOn = !m_engine->isHarmoniumPresetMode();
         m_engine->setHarmoniumPresetMode(presetAutoOn);
         if (presetAutoOn) {
             m_btnHarmoniumToggle->setText(L().btnHarmPresetOn);
-            m_btnHarmoniumToggle->setStyleSheet("background-color: #ef6c00; color: white; font-size: 12px;");
+            m_btnHarmoniumToggle->setStyleSheet("background-color: #ef6c00; color: white; font-size: 11px;");
         } else {
             m_btnHarmoniumToggle->setText(L().btnHarmPresetOff);
-            m_btnHarmoniumToggle->setStyleSheet("background-color: #00695c; color: white; font-size: 12px;");
+            m_btnHarmoniumToggle->setStyleSheet("background-color: #00695c; color: white; font-size: 11px;");
         }
     });
 
@@ -598,18 +641,93 @@ QWidget* MainWindow::createMainPerformanceTab() {
     harmTop->addWidget(m_btnOctUp);
     harmTop->addWidget(m_btnEqToggle);
     harmTop->addWidget(m_btnReverbToggle);
+    harmOuter->addLayout(harmTop);
+
+    // Second Compact Row inside m_grpHarm: MIDI In & Out Routing + Dual Channel Selectors
+    QHBoxLayout* midiRow = new QHBoxLayout();
+    midiRow->setSpacing(3);
+
+    m_btnMidiInToggle = new QPushButton(L().btnMidiInOn);
+    m_btnMidiInToggle->setStyleSheet("background-color: #00695c; color: #fff;");
+    connect(m_btnMidiInToggle, &QPushButton::clicked, this, [this]() {
+        bool en = !m_engine->isMidiInEnabled();
+        m_engine->setMidiInEnabled(en);
+        m_btnMidiInToggle->setText(en ? L().btnMidiInOn : L().btnMidiInOff);
+        m_btnMidiInToggle->setStyleSheet(en ? "background-color: #00695c; color: #fff;" : "background-color: #333; color: #888;");
+    });
+
+    m_cmbMidiInMode = new QComboBox();
+    m_cmbMidiInMode->addItem(L().midiInModeDual, 0);
+    m_cmbMidiInMode->addItem(L().midiInModeSplit, 1);
+    m_cmbMidiInMode->addItem(L().midiInModeHarm, 2);
+    m_cmbMidiInMode->addItem(L().midiInModeDrums, 3);
+    connect(m_cmbMidiInMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
+        m_engine->setMidiInMode(m_cmbMidiInMode->currentData().toInt());
+    });
+
+    m_lblHarmCh = new QLabel(L().lblHarmCh);
+    m_cmbMidiHarmCh = new QComboBox();
+    m_cmbMidiHarmCh->addItem(L().chAny, -1);
+    for (int ch = 1; ch <= 16; ++ch) {
+        m_cmbMidiHarmCh->addItem(QString("Ch %1").arg(ch), ch - 1);
+    }
+    m_cmbMidiHarmCh->setCurrentIndex(0); // Default: Any (Out uses Ch 1)
+    connect(m_cmbMidiHarmCh, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
+        m_engine->setMidiHarmChannel(m_cmbMidiHarmCh->currentData().toInt());
+    });
+
+    m_lblDrumCh = new QLabel(L().lblDrumCh);
+    m_cmbMidiDrumCh = new QComboBox();
+    m_cmbMidiDrumCh->addItem(L().chAny, -1);
+    for (int ch = 1; ch <= 16; ++ch) {
+        m_cmbMidiDrumCh->addItem(QString("Ch %1").arg(ch), ch - 1);
+    }
+    m_cmbMidiDrumCh->setCurrentIndex(10); // Default: Ch 10 (index 10 -> data 9)
+    connect(m_cmbMidiDrumCh, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
+        m_engine->setMidiDrumChannel(m_cmbMidiDrumCh->currentData().toInt());
+    });
+
+    m_btnMidiOutToggle = new QPushButton(L().btnMidiOutOff);
+    m_btnMidiOutToggle->setStyleSheet("background-color: #424242; color: #ccc;");
+    connect(m_btnMidiOutToggle, &QPushButton::clicked, this, [this]() {
+        bool en = !m_engine->isMidiOutEnabled();
+        m_engine->setMidiOutEnabled(en);
+        m_btnMidiOutToggle->setText(en ? L().btnMidiOutOn : L().btnMidiOutOff);
+        m_btnMidiOutToggle->setStyleSheet(en
+                                              ? "background-color: #0277bd; color: #fff; border: 1px solid #00e5ff;"
+                                              : "background-color: #424242; color: #ccc;");
+    });
+
+    m_cmbMidiOutMode = new QComboBox();
+    m_cmbMidiOutMode->addItem(L().midiOutModeBoth, 0);
+    m_cmbMidiOutMode->addItem(L().midiOutModeHarm, 1);
+    m_cmbMidiOutMode->addItem(L().midiOutModeDrums, 2);
+    connect(m_cmbMidiOutMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
+        m_engine->setMidiOutMode(m_cmbMidiOutMode->currentData().toInt());
+    });
+
+    midiRow->addWidget(m_btnMidiInToggle);
+    midiRow->addWidget(m_cmbMidiInMode);
+    midiRow->addWidget(m_lblHarmCh);
+    midiRow->addWidget(m_cmbMidiHarmCh);
+    midiRow->addWidget(m_lblDrumCh);
+    midiRow->addWidget(m_cmbMidiDrumCh);
+    midiRow->addWidget(m_btnMidiOutToggle);
+    midiRow->addWidget(m_cmbMidiOutMode);
+    harmOuter->addLayout(midiRow);
+
     mainLayout->addWidget(m_grpHarm);
 
     // 5. On-Screen Touch / PC Keyboard Piano
     m_pianoWidget = new TouchPianoWidget(this);
     connect(m_pianoWidget, &TouchPianoWidget::notePressed, this, [this](int midi, int vel) {
         m_activeNotes.insert(midi);
-        m_engine->noteOn(midi, vel);
+        m_engine->noteOn(midi, vel, false);
         m_pianoWidget->setActiveNotes(m_activeNotes);
     });
     connect(m_pianoWidget, &TouchPianoWidget::noteReleased, this, [this](int midi) {
         m_activeNotes.erase(midi);
-        m_engine->noteOff(midi);
+        m_engine->noteOff(midi, false);
         m_pianoWidget->setActiveNotes(m_activeNotes);
     });
     mainLayout->addWidget(m_pianoWidget, 1);
@@ -638,12 +756,16 @@ QWidget* MainWindow::createHarmoniumEditorTab() {
     QHBoxLayout* topRow = new QHBoxLayout();
     m_lblHarmEdSong = new QLabel(L().lblEdSong);
     m_cmbHarmEdSelect = new QComboBox();
-    m_cmbHarmEdSelect->setMinimumWidth(140);
+    m_cmbHarmEdSelect->setMinimumWidth(130);
     connect(m_cmbHarmEdSelect, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onHarmEditorSongSelected);
 
     m_btnHarmEdNew = new QPushButton(L().btnNewSong);
     m_btnHarmEdNew->setStyleSheet("background-color: #00695c; color: white;");
     connect(m_btnHarmEdNew, &QPushButton::clicked, this, &MainWindow::onHarmEditorNewSong);
+
+    m_btnHarmEdRandom = new QPushButton(L().btnEdRandRaga);
+    m_btnHarmEdRandom->setStyleSheet("background-color: #6a1b9a; color: #ffeb3b; font-weight: bold;");
+    connect(m_btnHarmEdRandom, &QPushButton::clicked, this, &MainWindow::onRandomiseRagaClicked);
 
     m_lblHarmEdName = new QLabel(L().lblEdName);
     m_txtHarmEdTitle = new QLineEdit("");
@@ -670,6 +792,7 @@ QWidget* MainWindow::createHarmoniumEditorTab() {
     topRow->addWidget(m_lblHarmEdSong);
     topRow->addWidget(m_cmbHarmEdSelect);
     topRow->addWidget(m_btnHarmEdNew);
+    topRow->addWidget(m_btnHarmEdRandom);
     topRow->addWidget(m_lblHarmEdName);
     topRow->addWidget(m_txtHarmEdTitle, 1);
     topRow->addWidget(m_lblHarmEdVibhags);
@@ -685,7 +808,7 @@ QWidget* MainWindow::createHarmoniumEditorTab() {
         onHarmEditorSaveSong();
         m_engine->setHarmoniumPresetMode(true);
         m_btnHarmoniumToggle->setText(L().btnHarmPresetOn);
-        m_btnHarmoniumToggle->setStyleSheet("background-color: #ef6c00; color: white; font-size: 12px;");
+        m_btnHarmoniumToggle->setStyleSheet("background-color: #ef6c00; color: white; font-size: 11px;");
         onStartStopClicked();
     });
 
@@ -906,12 +1029,16 @@ QWidget* MainWindow::createTalaEditorTab() {
     QHBoxLayout* topRow = new QHBoxLayout();
     m_lblTalaEdSelect = new QLabel(L().lblSelectTala);
     m_cmbTalaEdSelect = new QComboBox();
-    m_cmbTalaEdSelect->setMinimumWidth(160);
+    m_cmbTalaEdSelect->setMinimumWidth(145);
     connect(m_cmbTalaEdSelect, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onTalaEditorSelected);
 
     m_btnTalaEdNew = new QPushButton(L().btnNewTala);
     m_btnTalaEdNew->setStyleSheet("background-color: #00695c; color: white;");
     connect(m_btnTalaEdNew, &QPushButton::clicked, this, &MainWindow::onTalaEditorNewTala);
+
+    m_btnTalaEdRandom = new QPushButton(L().btnEdRandTala);
+    m_btnTalaEdRandom->setStyleSheet("background-color: #00796b; color: #ffeb3b; font-weight: bold;");
+    connect(m_btnTalaEdRandom, &QPushButton::clicked, this, &MainWindow::onRandomiseTalaClicked);
 
     m_lblTalaEdName = new QLabel(L().lblTalaName);
     m_txtTalaEdName = new QLineEdit("");
@@ -925,6 +1052,7 @@ QWidget* MainWindow::createTalaEditorTab() {
     topRow->addWidget(m_lblTalaEdSelect);
     topRow->addWidget(m_cmbTalaEdSelect);
     topRow->addWidget(m_btnTalaEdNew);
+    topRow->addWidget(m_btnTalaEdRandom);
     topRow->addWidget(m_lblTalaEdName);
     topRow->addWidget(m_txtTalaEdName, 1);
     topRow->addWidget(m_lblTalaEdVibhags);
@@ -1097,6 +1225,31 @@ void MainWindow::onTalaEditorNewTala() {
     rebuildTrackAndTalaControls();
 }
 
+void MainWindow::onRandomiseRagaClicked() {
+    m_engine->randomiseCurrentRagaSong();
+    m_engine->setHarmoniumPresetMode(true);
+    m_btnHarmoniumToggle->setText(L().btnHarmPresetOn);
+    m_btnHarmoniumToggle->setStyleSheet("background-color: #ef6c00; color: white; font-size: 11px;");
+    rebuildTrackAndTalaControls();
+
+    if (!m_engine->isPlaying()) {
+        m_engine->startWithCountdown(false);
+        m_btnStartStop->setText(L().btnStop);
+        m_btnStartStop->setStyleSheet("background-color: #b71c1c; color: white; font-size: 12px; min-width: 68px;");
+    }
+}
+
+void MainWindow::onRandomiseTalaClicked() {
+    m_engine->randomiseCurrentTalaTheka();
+    rebuildTrackAndTalaControls();
+
+    if (!m_engine->isPlaying()) {
+        m_engine->startWithCountdown(false);
+        m_btnStartStop->setText(L().btnStop);
+        m_btnStartStop->setStyleSheet("background-color: #b71c1c; color: white; font-size: 12px; min-width: 68px;");
+    }
+}
+
 void MainWindow::rebuildTrackAndTalaControls() {
     for (auto* b : m_trackButtons) delete b;
     m_trackButtons.clear();
@@ -1192,11 +1345,11 @@ void MainWindow::onStartStopClicked() {
     if (!m_engine->isPlaying()) {
         m_engine->startWithCountdown(m_chkCountdown->isChecked());
         m_btnStartStop->setText(L().btnStop);
-        m_btnStartStop->setStyleSheet("background-color: #b71c1c; color: white; font-size: 13px; min-width: 75px;");
+        m_btnStartStop->setStyleSheet("background-color: #b71c1c; color: white; font-size: 12px; min-width: 68px;");
     } else {
         m_engine->stopPlayback();
         m_btnStartStop->setText(L().btnStart);
-        m_btnStartStop->setStyleSheet("background-color: #1b5e20; color: white; font-size: 13px; min-width: 75px;");
+        m_btnStartStop->setStyleSheet("background-color: #1b5e20; color: white; font-size: 12px; min-width: 68px;");
         m_btnPause->setText(L().btnPause);
     }
 }
@@ -1217,7 +1370,7 @@ void MainWindow::onLoadClicked() {
     if (ProjectIO::loadFile(path, loaded)) {
         m_engine->stopPlayback();
         m_btnStartStop->setText(L().btnStart);
-        m_btnStartStop->setStyleSheet("background-color: #1b5e20; color: white; font-size: 13px; min-width: 75px;");
+        m_btnStartStop->setStyleSheet("background-color: #1b5e20; color: white; font-size: 12px; min-width: 68px;");
         m_engine->loadSong(loaded);
         m_spinBpm->setValue(loaded.bpm);
         m_cmbSaNote->setCurrentIndex(loaded.saSemitone);
@@ -1325,7 +1478,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
     int midi = pcKeyToMidi(event->key());
     if (midi >= 0) {
         m_activeNotes.insert(midi);
-        m_engine->noteOn(midi, 105);
+        m_engine->noteOn(midi, 105, false);
         m_pianoWidget->setActiveNotes(m_activeNotes);
     }
 }
@@ -1335,7 +1488,7 @@ void MainWindow::keyReleaseEvent(QKeyEvent* event) {
     int midi = pcKeyToMidi(event->key());
     if (midi >= 0) {
         m_activeNotes.erase(midi);
-        m_engine->noteOff(midi);
+        m_engine->noteOff(midi, false);
         m_pianoWidget->setActiveNotes(m_activeNotes);
     }
 }
