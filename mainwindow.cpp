@@ -335,8 +335,6 @@ void MainWindow::retranslateUi() {
     m_btnOctDown->setText(lang.btnOctDown);
     m_btnOctUp->setText(lang.btnOctUp);
     m_lblOctave->setText(lang.lblOctaveFmt.arg(m_engine->getOctaveShift()));
-    m_btnEqToggle->setText(m_engine->isEqEnabled() ? lang.btnEqOn : lang.btnEqOff);
-    m_btnReverbToggle->setText(m_engine->isReverbEnabled() ? lang.btnReverbOn : lang.btnReverbOff);
 
     m_btnMidiInToggle->setText(m_engine->isMidiInEnabled() ? lang.btnMidiInOn : lang.btnMidiInOff);
     m_cmbMidiInMode->blockSignals(true);
@@ -617,30 +615,11 @@ QWidget* MainWindow::createMainPerformanceTab() {
         m_lblOctave->setText(L().lblOctaveFmt.arg(m_engine->getOctaveShift()));
     });
 
-    m_btnEqToggle = new QPushButton(L().btnEqOn);
-    m_btnEqToggle->setStyleSheet("background-color: #283593; color: white;");
-    connect(m_btnEqToggle, &QPushButton::clicked, this, [this]() {
-        bool en = !m_engine->isEqEnabled();
-        m_engine->setEqEnabled(en);
-        m_btnEqToggle->setText(en ? L().btnEqOn : L().btnEqOff);
-        m_btnEqToggle->setStyleSheet(en ? "background-color: #283593; color: white;" : "background-color: #333; color: #888;");
-    });
-
-    m_btnReverbToggle = new QPushButton(L().btnReverbOn);
-    m_btnReverbToggle->setStyleSheet("background-color: #283593; color: white;");
-    connect(m_btnReverbToggle, &QPushButton::clicked, this, [this]() {
-        bool en = !m_engine->isReverbEnabled();
-        m_engine->setReverbEnabled(en);
-        m_btnReverbToggle->setText(en ? L().btnReverbOn : L().btnReverbOff);
-        m_btnReverbToggle->setStyleSheet(en ? "background-color: #283593; color: white;" : "background-color: #333; color: #888;");
-    });
-
     harmTop->addWidget(m_btnHarmoniumToggle);
     harmTop->addWidget(m_btnOctDown);
     harmTop->addWidget(m_lblOctave);
     harmTop->addWidget(m_btnOctUp);
-    harmTop->addWidget(m_btnEqToggle);
-    harmTop->addWidget(m_btnReverbToggle);
+    harmTop->addStretch();
     harmOuter->addLayout(harmTop);
 
     // Second Compact Row inside m_grpHarm: MIDI In & Out Routing + Dual Channel Selectors
@@ -735,9 +714,15 @@ QWidget* MainWindow::createMainPerformanceTab() {
     // 6. Status Footer
     QHBoxLayout* footer = new QHBoxLayout();
     m_lblSongTitle = new QLabel();
+    m_lblCpuMeter = new QLabel("DSP: 0%");
+    m_lblCpuMeter->setStyleSheet("color: #00e5ff; font-weight: bold; background-color: #111; padding: 2px 4px; border: 1px solid #333; border-radius: 3px;");
+    m_lblCpuMeter->setFixedWidth(65);
+    m_lblCpuMeter->setAlignment(Qt::AlignCenter);
     m_lblMidiStatus = new QLabel(L().midiScanning);
     m_lblMidiStatus->setAlignment(Qt::AlignRight);
     footer->addWidget(m_lblSongTitle);
+    // comment the below line out in final version
+    footer->addWidget(m_lblCpuMeter);
     footer->addWidget(m_lblMidiStatus);
     mainLayout->addLayout(footer);
 
@@ -1452,6 +1437,15 @@ void MainWindow::onUiTick() {
                                                      : "background-color: #263238; color: #00e5ff; font-weight: bold; padding: 3px; border-radius: 3px;");
         }
     }
+
+    int cpu = static_cast<int>(m_engine->getDspLoad());
+    m_lblCpuMeter->setText(QString("DSP: %1%").arg(cpu));
+    if (cpu > 80) { // Turns red when close to glitching
+        m_lblCpuMeter->setStyleSheet("color: #ff3d00; font-weight: bold; background-color: #3e1111; padding: 2px 4px; border: 1px solid #ff3d00; border-radius: 3px;");
+    } else {
+        m_lblCpuMeter->setStyleSheet("color: #00e5ff; font-weight: bold; background-color: #111; padding: 2px 4px; border: 1px solid #333; border-radius: 3px;");
+    }
+
 }
 
 int MainWindow::pcKeyToMidi(int key) const {

@@ -23,7 +23,7 @@ int SynthEngine::midiNoteToDrumTrack(int midiNote) {
 }
 
 SynthEngine::SynthEngine(QObject *parent)
-    : QIODevice(parent), m_eq(22050.0), m_reverb(22050.0) {
+    : QIODevice(parent) {
 
     m_format.setSampleRate(22050);
     m_format.setChannelCount(2);
@@ -35,8 +35,8 @@ SynthEngine::SynthEngine(QObject *parent)
     }
     m_sampleRate = std::max(8000.0, static_cast<double>(m_format.sampleRate()));
 
-    m_eq.setSampleRate(m_sampleRate);
-    m_reverb = Plate2x2Reverb(m_sampleRate);
+    m_liveHarmoniumTf.setSampleRate(m_sampleRate);
+    m_liveHarmoniumTf.setFormula("((1 + 2.5 * exp(-(((freq-320)/100)^2)) + 1.2 * exp(-(((freq-1300)/200)^2))) * (1 + 0.35 * exp(-j * 2 * pi * freq * 0.002))) / sqrt(1 + (freq/7200)^8)");
 
     try { m_shrutiO1 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(BuiltInPresets::shrutiDroneO1().toStdString()).release()); } catch (...) {}
     try { m_shrutiO2 = std::shared_ptr<XpressiveParser::Node>(XpressiveParser::parse(BuiltInPresets::shrutiDroneO2().toStdString()).release()); } catch (...) {}
@@ -107,6 +107,8 @@ void SynthEngine::loadSong(const MmpSong& song) {
 
     for (size_t i = 0; i < song.tracks.size(); ++i) {
         m_runtimeTracks[i].spec = song.tracks[i];
+        m_runtimeTracks[i].tfFx.setSampleRate(m_sampleRate);
+        m_runtimeTracks[i].tfFx.setFormula(song.tracks[i].tfStr);
         ProjectIO::compileTrackAsts(m_runtimeTracks[i].spec);
 
         for (const auto& fSpec : m_runtimeTracks[i].spec.fxFilters) {
@@ -390,18 +392,6 @@ void SynthEngine::setTuning(int saSemitone, double a4Hz) {
     m_a4Hz.store(std::clamp(a4Hz, 415.0, 466.0));
 }
 
-void SynthEngine::setEqEnabled(bool en) {
-    QMutexLocker locker(&m_mutex);
-    m_eqEnabled.store(en);
-    m_eq.enabled = en;
-}
-
-void SynthEngine::setReverbEnabled(bool en) {
-    QMutexLocker locker(&m_mutex);
-    m_reverbEnabled.store(en);
-    m_reverb.enabled = en;
-}
-
 void SynthEngine::triggerDrumTrackFromMidi(int trackIdx, int velocity) {
     QMutexLocker locker(&m_mutex);
     if (trackIdx < 0 || trackIdx >= static_cast<int>(m_runtimeTracks.size())) return;
@@ -479,10 +469,29 @@ void SynthEngine::noteOn(int midiNote, int velocity, bool fromExternalMidi) {
         }
     }
 
-    HarmoniumVoice* slot = &m_harmVoices[0];
+    HarmoniumVoice* slot = nullptr;
+    double maxTrel = -1.0;
+
+
     for (auto& hv : m_harmVoices) {
         if (!hv.active) { slot = &hv; break; }
+        if (!hv.held && hv.trel > maxTrel) {
+            maxTrel = hv.trel;
+            slot = &hv;
+        }
     }
+
+    if (!slot) {
+        double maxT = -1.0;
+        for (auto& hv : m_harmVoices) {
+            if (hv.t > maxT) {
+                maxT = hv.t;
+                slot = &hv;
+            }
+        }
+    }
+    if (!slot) slot = &m_harmVoices[0];
+
     slot->active = true;
     slot->held = true;
     slot->midiNote = shiftedNote;
@@ -572,6 +581,9 @@ qint64 SynthEngine::writeData(const char *data, qint64 len) {
 }
 
 qint64 SynthEngine::readData(char *data, qint64 maxlen) {
+    QElapsedTimer dspTimer;
+    dspTimer.start();
+
     QMutexLocker locker(&m_mutex);
     std::memset(data, 0, maxlen);
 
@@ -725,6 +737,10 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
             for (auto& bf : rt.filters) {
                 trkSample = bf.process(trkSample);
             }
+
+            // Apply the dynamic transfer function convolution filter block
+            trkSample = rt.tfFx.process(trkSample);
+
             double gain = rt.spec.isBeatTrack ? 0.35 : 0.22;
             mix += trkSample * rt.spec.vol * gain;
         }
@@ -798,16 +814,17 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
                 harmMix += vOut * hv.velocity;
                 hv.t += dt;
             }
+
+            // ADDED: Process the live manual keys through the EQ/Chorus!
+            harmMix = m_liveHarmoniumTf.process(harmMix);
+
             mix += harmMix * 0.22;
         }
 
-        mix = m_eq.process(mix);
-        mix = m_reverb.process(mix);
-
         float outSample = static_cast<float>(mix);
         if (std::isnan(outSample) || std::isinf(outSample)) outSample = 0.0f;
-        outSample = std::clamp(outSample, -1.0f, 1.0f);
-
+        outSample = std::tanh(outSample);
+        
         if (isFloat) {
             for (int ch = 0; ch < channels; ++ch) bufferF32[i * channels + ch] = outSample;
         } else {
@@ -815,6 +832,16 @@ qint64 SynthEngine::readData(char *data, qint64 maxlen) {
             for (int ch = 0; ch < channels; ++ch) bufferI16[i * channels + ch] = iSample;
         }
     }
+
+
+    if (frames > 0) {
+        double bufferTime = static_cast<double>(frames) / m_sampleRate;
+        double calcTime = dspTimer.nsecsElapsed() / 1e9;
+        float load = static_cast<float>((calcTime / bufferTime) * 100.0);
+        float current = m_dspLoad.load(std::memory_order_relaxed);
+        m_dspLoad.store(current * 0.95f + load * 0.05f, std::memory_order_relaxed); // Smooth display
+    }
+
 
     return maxlen;
 }

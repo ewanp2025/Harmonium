@@ -29,7 +29,8 @@ I currently have the code running on Windows connected to my MicroKorg as a MIDI
   * Microtonal tuning (set Sa to any key from C through B, plus adjustable A4 concert pitch from 415 Hz to 466 Hz)
   * Real-time detection display showing current note name and octave
   * Individual mute toggles for every rhythm track and instrument
-  * Built-in 8-Band Equaliser and custom Plate Reverb
+  * Built-in internal transfer function based effects
+  * Buit in saveable pattern randomisers
 * **Built-in Visual Editors:**
   * **Harmonium Editor:** Create and edit songs using standard notation (`S`, `r`, `R`, `g`, `G`, etc.) and split compositions across multiple forms.
   * **Tala Editor:** Build and customise rhythm cycles.
@@ -39,11 +40,11 @@ I currently have the code running on Windows connected to my MicroKorg as a MIDI
 
 ### Credits & Compatibility
 * **LMMS & Xpressive Synthesis Specification:** This software includes an independent, lightweight C++ expression parser (`XpressiveParser`) and project loader designed for compatibility with mathematical instrument formulas created in [LMMS](https://lmms.io/) using the **Xpressive** synthesiser plugin. Full credit goes to the LMMS development team and the authors of the Xpressive plugin for pioneering this formula-based synthesis workflow.
-* **Audio DSP:** The master EQ and Plate Reverb (`Plate2x2Reverb`) are independent C++ DSP implementations inspired by the parameter layouts of the LMMS 8-Band Equalizer and Tim Goetze's CAPS `C* Plate2x2` LADSPA plugin.
+
 * **Frameworks & Platform Audio:** Built with [Qt 6](https://www.qt.io/) (used under the LGPLv3/GPLv3 license) using ALSA for Raspberry Pi OS Lite and WinMM for Windows USB-MIDI and audio output.
 
 ### Known Issues
-* CPU performance slows down when either drone is enabled (currently investigating).
+* CPU performance slows down when drone is enabled or when pressing keys very quickly (currently investigating).
 * Only tested on Windows so far; Raspberry Pi testing pending hardware arrival.
 
 ### Future

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <vector>
 #include <array>
+#include <QElapsedTimer>
 #include "effect.h"
 #include "projectio.h"
 #include "xpressive_parser.h"
@@ -85,10 +86,7 @@ public:
     void setRagaTrackSource(int sourceIdx) { m_ragaSourceTrack.store(sourceIdx); }
     int getCurrentDetectedMidiNote() const { return m_detectedMidiNote.load(); }
 
-    void setEqEnabled(bool en);
-    void setReverbEnabled(bool en);
-    bool isEqEnabled() const { return m_eqEnabled.load(); }
-    bool isReverbEnabled() const { return m_reverbEnabled.load(); }
+
 
     // MIDI In / Out Configuration
     void setMidiInEnabled(bool en) { m_midiInEnabled.store(en); }
@@ -121,6 +119,8 @@ public:
     bool isSequential() const override { return true; }
     qint64 bytesAvailable() const override;
 
+    float getDspLoad() const { return m_dspLoad.load(std::memory_order_relaxed); }
+
 protected:
     qint64 readData(char *data, qint64 maxlen) override;
     qint64 writeData(const char *data, qint64 len) override;
@@ -145,6 +145,7 @@ private:
     struct RuntimeTrack {
         MmpTrack spec;
         std::vector<BiquadFilter> filters;
+        TransferFunctionFX tfFx;
         std::array<RuntimeTrackVoice, 6> voices;
         int nextVoice = 0;
     };
@@ -183,12 +184,13 @@ private:
     std::shared_ptr<XpressiveParser::Node> m_harmoniumAst;
     std::array<HarmoniumVoice, 8> m_harmVoices;
 
+    TransferFunctionFX m_liveHarmoniumTf;
+
     std::shared_ptr<XpressiveParser::Node> m_shrutiO1, m_shrutiO2;
     std::shared_ptr<XpressiveParser::Node> m_tanpuraO1, m_tanpuraO2;
     std::array<DroneNoteState, 3> m_droneNotes;
 
-    EightBandEQ m_eq;
-    Plate2x2Reverb m_reverb;
+
 
     std::atomic<bool> m_isPlaying{false};
     std::atomic<bool> m_isPaused{false};
@@ -226,6 +228,8 @@ private:
 
     std::atomic<int> m_ragaSourceTrack{-1};
     std::atomic<int> m_detectedMidiNote{60};
+
+    std::atomic<float> m_dspLoad{0.0f};
 };
 
 #endif // SYNTHENGINE_H

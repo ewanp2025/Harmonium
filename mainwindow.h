@@ -131,6 +131,7 @@ private:
 
     QLabel* m_lblSongTitle = nullptr;
     QLabel* m_lblMidiStatus = nullptr;
+    QLabel* m_lblCpuMeter = nullptr;
     QLabel* m_lblRagaPopup = nullptr;
 
     QGroupBox* m_grpTuner = nullptr;
@@ -151,8 +152,6 @@ private:
     QPushButton* m_btnHarmoniumToggle = nullptr;
     QPushButton* m_btnOctDown = nullptr;
     QPushButton* m_btnOctUp = nullptr;
-    QPushButton* m_btnEqToggle = nullptr;
-    QPushButton* m_btnReverbToggle = nullptr;
     QLabel* m_lblOctave = nullptr;
 
     // MIDI In / Out Controls

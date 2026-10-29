@@ -2,7 +2,8 @@
 #define EFFECT_H
 
 #include <vector>
-#include <memory>
+#include <complex>
+#include <QString>
 #include <cmath>
 #include <algorithm>
 
@@ -25,71 +26,35 @@ struct BiquadFilter {
     }
 };
 
-// 8-Band Equalizer
-class EightBandEQ {
+class TransferFunctionFX {
 public:
-    explicit EightBandEQ(double sampleRate = 44100.0);
+    explicit TransferFunctionFX(double sampleRate = 22050.0);
     void setSampleRate(double sr);
-    void updateBands(double peak320Db, double peak1k3Db, double lpfCutoffHz);
-    double process(double input);
+    void setFormula(const QString& formula);
+    float process(float input);
 
-    bool enabled = true;
-    double inGain = 1.0;
-    double outGain = 1.0;
-    double m_peak320Db = 4.5;
-    double m_peak1k3Db = 2.5;
-    double m_lpfCutoff = 7200.0;
+    bool enabled = false;
 
 private:
-    double m_sr = 44100.0;
-    BiquadFilter m_bands[5]; // Active bands: LowShelf, Peak3, Peak4, HighShelf7, LPF8
-};
+    double m_sr = 22050.0;
+    QString m_formula;
 
-// Plate2x2 Reverb (bandwidth, tail, damping, blend)
-class Plate2x2Reverb {
-public:
-    explicit Plate2x2Reverb(double sampleRate = 44100.0);
-    void setParameters(double bandwidth, double tail, double damping, double blend);
-    double process(double input);
+    int m_fftSize = 512;
+    int m_hopSize = 128;
+    int m_hopPos = 0;
+    int m_silentSamples = 10000;
 
-    bool enabled = true;
-    double bandwidth = 0.60;
-    double tail = 0.48;
-    double damping = 0.32;
-    double blend = 0.25;
+    std::vector<int> m_bitRev;
+    std::vector<std::complex<float>> m_twiddlesFwd;
+    std::vector<std::complex<float>> m_twiddlesInv;
+    std::vector<std::complex<float>> m_filterCurve;
+    std::vector<std::complex<float>> m_fftBuffer;
 
-private:
-    struct AllPass {
-        std::vector<double> buf;
-        size_t idx = 0;
-        double g = 0.5;
-        void init(size_t len, double gain) { buf.assign(std::max<size_t>(1, len), 0.0); idx = 0; g = gain; }
-        inline double process(double x) {
-            double bu = buf[idx];
-            double y = -x * g + bu;
-            buf[idx] = x + y * g;
-            if (++idx >= buf.size()) idx = 0;
-            return y;
-        }
-    };
-    struct Comb {
-        std::vector<double> buf;
-        size_t idx = 0;
-        double store = 0.0;
-        void init(size_t len) { buf.assign(std::max<size_t>(1, len), 0.0); idx = 0; store = 0.0; }
-        inline double process(double x, double fb, double damp) {
-            double y = buf[idx];
-            store = y * (1.0 - damp) + store * damp;
-            buf[idx] = x + store * fb;
-            if (++idx >= buf.size()) idx = 0;
-            return y;
-        }
-    };
-
-    double m_bwState = 0.0;
-    AllPass m_inDiff[4];
-    Comb m_tankCombs[4];
-    AllPass m_tankAp[2];
+    std::vector<float> m_window;
+    std::vector<float> m_history;
+    std::vector<float> m_overlapAdd;
+    std::vector<float> m_inputQueue;
+    std::vector<float> m_outputQueue;
 };
 
 #endif // EFFECT_H

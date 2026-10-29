@@ -30,7 +30,7 @@ struct MmpTrack {
     double A1 = 1.0, A2 = 1.0, A3 = 1.0;
     double pan1 = 1.0, pan2 = -1.0;
 
-    QString w1Str, w2Str, w3Str, o1Str, o2Str;
+    QString w1Str, w2Str, w3Str, o1Str, o2Str, tfStr;
     std::vector<float> w1Sample, w2Sample, w3Sample;
 
     bool useAdsr = false;

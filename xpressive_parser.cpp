@@ -69,7 +69,16 @@ class NumNode : public Node {
 public:
     explicit NumNode(double v) : val(v) {}
     double eval(Env&) const override { return val; }
+    double value() const { return val; }
 };
+
+static bool isConstantNode(const std::unique_ptr<Node>& n, double* outVal = nullptr) {
+    if (auto* num = dynamic_cast<const NumNode*>(n.get())) {
+        if (outVal) *outVal = num->value();
+        return true;
+    }
+    return false;
+}
 
 class LastNode : public Node {
 public:
@@ -77,7 +86,7 @@ public:
 };
 
 class VarNode : public Node {
-    enum VarType { V_T, V_TEMPO, V_SRATE, V_F, V_REL, V_TREL, V_A1, V_A2, V_A3, V_PI } type;
+    enum VarType { V_T, V_TEMPO, V_SRATE, V_F, V_REL, V_TREL, V_A1, V_A2, V_A3 } type;
 public:
     explicit VarNode(const std::string& n) {
         if (n == "t" || n == "lt") type = V_T;
@@ -88,21 +97,19 @@ public:
         else if (n == "A1") type = V_A1;
         else if (n == "A2") type = V_A2;
         else if (n == "A3") type = V_A3;
-        else if (n == "pi" || n == "PI") type = V_PI;
         else type = V_F;
     }
     double eval(Env& e) const override {
         switch (type) {
-            case V_T: return e.t;
-            case V_TEMPO: return e.tempo;
-            case V_SRATE: return e.srate;
-            case V_REL: return e.rel;
-            case V_TREL: return e.trel;
-            case V_A1: return e.A1;
-            case V_A2: return e.A2;
-            case V_A3: return e.A3;
-            case V_PI: return M_PI;
-            default: return e.f;
+        case V_T: return e.t;
+        case V_TEMPO: return e.tempo;
+        case V_SRATE: return e.srate;
+        case V_REL: return e.rel;
+        case V_TREL: return e.trel;
+        case V_A1: return e.A1;
+        case V_A2: return e.A2;
+        case V_A3: return e.A3;
+        default: return e.f;
         }
     }
 };
@@ -161,19 +168,19 @@ public:
     double eval(Env& e) const override {
         double a = l->eval(e), b = r->eval(e);
         switch (op) {
-            case TOK_PLUS: return a + b;
-            case TOK_MINUS: return a - b;
-            case TOK_MUL: return a * b;
-            case TOK_DIV: return b == 0.0 ? 0.0 : a / b;
-            case TOK_EQ: return a == b ? 1.0 : 0.0;
-            case TOK_NEQ: return a != b ? 1.0 : 0.0;
-            case TOK_LT: return a < b ? 1.0 : 0.0;
-            case TOK_GT: return a > b ? 1.0 : 0.0;
-            case TOK_LTE: return a <= b ? 1.0 : 0.0;
-            case TOK_GTE: return a >= b ? 1.0 : 0.0;
-            case TOK_OR: return (a != 0.0 || b != 0.0) ? 1.0 : 0.0;
-            case TOK_AND: return (a != 0.0 && b != 0.0) ? 1.0 : 0.0;
-            default: return 0.0;
+        case TOK_PLUS: return a + b;
+        case TOK_MINUS: return a - b;
+        case TOK_MUL: return a * b;
+        case TOK_DIV: return b == 0.0 ? 0.0 : a / b;
+        case TOK_EQ: return a == b ? 1.0 : 0.0;
+        case TOK_NEQ: return a != b ? 1.0 : 0.0;
+        case TOK_LT: return a < b ? 1.0 : 0.0;
+        case TOK_GT: return a > b ? 1.0 : 0.0;
+        case TOK_LTE: return a <= b ? 1.0 : 0.0;
+        case TOK_GTE: return a >= b ? 1.0 : 0.0;
+        case TOK_OR: return (a != 0.0 || b != 0.0) ? 1.0 : 0.0;
+        case TOK_AND: return (a != 0.0 && b != 0.0) ? 1.0 : 0.0;
+        default: return 0.0;
         }
     }
 };
@@ -234,9 +241,42 @@ static double fnCos(double a) { return std::cos(a); }
 static double fnExp(double a) { return std::exp(a); }
 static double fnFloor(double a) { return std::floor(a); }
 static double fnAbs(double a) { return std::fabs(a); }
-static double fnCent(double c) { return std::pow(2.0, c / 1200.0); }
+static double fnCent(double c) { return std::exp2(c * (1.0 / 1200.0)); }
 
 std::unique_ptr<Node> parseExpr(Lexer& lex);
+
+static std::unique_ptr<Node> makeFunc1(std::unique_ptr<Node> arg, double (*fn)(double)) {
+    double c = 0.0;
+    if (fn != fnRandv && isConstantNode(arg, &c)) {
+        return std::make_unique<NumNode>(fn(c));
+    }
+    return std::make_unique<Func1Node>(std::move(arg), fn);
+}
+
+static std::unique_ptr<Node> makeFunc2(std::unique_ptr<Node> a1, std::unique_ptr<Node> a2, double (*fn)(double, double)) {
+    double c1 = 0.0, c2 = 0.0;
+    if (isConstantNode(a1, &c1) && isConstantNode(a2, &c2)) {
+        return std::make_unique<NumNode>(fn(c1, c2));
+    }
+    return std::make_unique<Func2Node>(std::move(a1), std::move(a2), fn);
+}
+
+static std::unique_ptr<Node> makeBinOp(std::unique_ptr<Node> l, std::unique_ptr<Node> r, Token op) {
+    double c1 = 0.0, c2 = 0.0;
+    bool lConst = isConstantNode(l, &c1);
+    bool rConst = isConstantNode(r, &c2);
+
+    if (lConst && rConst) {
+        BinOpNode tmp(std::move(l), std::move(r), op);
+        Env dummy;
+        return std::make_unique<NumNode>(tmp.eval(dummy));
+    }
+    // Convert division by constant into fast multiplication by reciprocal
+    if (op == TOK_DIV && rConst && c2 != 0.0) {
+        return std::make_unique<BinOpNode>(std::move(l), std::make_unique<NumNode>(1.0 / c2), TOK_MUL);
+    }
+    return std::make_unique<BinOpNode>(std::move(l), std::move(r), op);
+}
 
 std::unique_ptr<Node> parsePrimary(Lexer& lex) {
     if (lex.curTok == TOK_NUM) {
@@ -248,6 +288,7 @@ std::unique_ptr<Node> parsePrimary(Lexer& lex) {
         std::string id = lex.idStr;
         lex.next();
         if (lex.curTok != TOK_LPAREN) {
+            if (id == "pi" || id == "PI") return std::make_unique<NumNode>(M_PI);
             return std::make_unique<VarNode>(id);
         }
         lex.next();
@@ -268,20 +309,20 @@ std::unique_ptr<Node> parsePrimary(Lexer& lex) {
         if (id == "W2") return std::make_unique<WaveCallNode>(2, std::move(a1));
         if (id == "W3") return std::make_unique<WaveCallNode>(3, std::move(a1));
         if (id == "clamp" && a2 && a3) return std::make_unique<ClampNode>(std::move(a1), std::move(a2), std::move(a3));
-        if (id == "mod" && a2) return std::make_unique<Func2Node>(std::move(a1), std::move(a2), fnMod);
-        if (id == "min" && a2) return std::make_unique<Func2Node>(std::move(a1), std::move(a2), fnMin);
-        if (id == "max" && a2) return std::make_unique<Func2Node>(std::move(a1), std::move(a2), fnMax);
-        if (id == "pow" && a2) return std::make_unique<Func2Node>(std::move(a1), std::move(a2), fnPow);
-        if (id == "sinew") return std::make_unique<Func1Node>(std::move(a1), fnSinew);
-        if (id == "saww") return std::make_unique<Func1Node>(std::move(a1), fnSaww);
-        if (id == "squarew") return std::make_unique<Func1Node>(std::move(a1), fnSquarew);
-        if (id == "trianglew") return std::make_unique<Func1Node>(std::move(a1), fnTrianglew);
-        if (id == "sin") return std::make_unique<Func1Node>(std::move(a1), fnSin);
-        if (id == "cos") return std::make_unique<Func1Node>(std::move(a1), fnCos);
-        if (id == "exp") return std::make_unique<Func1Node>(std::move(a1), fnExp);
-        if (id == "floor") return std::make_unique<Func1Node>(std::move(a1), fnFloor);
-        if (id == "abs") return std::make_unique<Func1Node>(std::move(a1), fnAbs);
-        if (id == "cent") return std::make_unique<Func1Node>(std::move(a1), fnCent);
+        if (id == "mod" && a2) return makeFunc2(std::move(a1), std::move(a2), fnMod);
+        if (id == "min" && a2) return makeFunc2(std::move(a1), std::move(a2), fnMin);
+        if (id == "max" && a2) return makeFunc2(std::move(a1), std::move(a2), fnMax);
+        if (id == "pow" && a2) return makeFunc2(std::move(a1), std::move(a2), fnPow);
+        if (id == "sinew") return makeFunc1(std::move(a1), fnSinew);
+        if (id == "saww") return makeFunc1(std::move(a1), fnSaww);
+        if (id == "squarew") return makeFunc1(std::move(a1), fnSquarew);
+        if (id == "trianglew") return makeFunc1(std::move(a1), fnTrianglew);
+        if (id == "sin") return makeFunc1(std::move(a1), fnSin);
+        if (id == "cos") return makeFunc1(std::move(a1), fnCos);
+        if (id == "exp") return makeFunc1(std::move(a1), fnExp);
+        if (id == "floor") return makeFunc1(std::move(a1), fnFloor);
+        if (id == "abs") return makeFunc1(std::move(a1), fnAbs);
+        if (id == "cent") return makeFunc1(std::move(a1), fnCent);
         if (id == "last") return std::make_unique<LastNode>();
         if (id == "randv") return std::make_unique<Func1Node>(std::move(a1), fnRandv);
         if (id == "integrate") return std::make_unique<IntegrateNode>(std::move(a1), lex.integratorCount++);
@@ -299,7 +340,13 @@ std::unique_ptr<Node> parsePrimary(Lexer& lex) {
 }
 
 std::unique_ptr<Node> parseUnary(Lexer& lex) {
-    if (lex.curTok == TOK_MINUS) { lex.next(); return std::make_unique<UnaryNode>(parseUnary(lex)); }
+    if (lex.curTok == TOK_MINUS) {
+        lex.next();
+        auto u = parseUnary(lex);
+        double c = 0.0;
+        if (isConstantNode(u, &c)) return std::make_unique<NumNode>(-c);
+        return std::make_unique<UnaryNode>(std::move(u));
+    }
     if (lex.curTok == TOK_PLUS) { lex.next(); return parseUnary(lex); }
     return parsePrimary(lex);
 }
@@ -308,7 +355,7 @@ std::unique_ptr<Node> parseMulDiv(Lexer& lex) {
     auto l = parseUnary(lex);
     while (lex.curTok == TOK_MUL || lex.curTok == TOK_DIV) {
         Token op = lex.curTok; lex.next();
-        l = std::make_unique<BinOpNode>(std::move(l), parseUnary(lex), op);
+        l = makeBinOp(std::move(l), parseUnary(lex), op);
     }
     return l;
 }
@@ -317,7 +364,7 @@ std::unique_ptr<Node> parseAddSub(Lexer& lex) {
     auto l = parseMulDiv(lex);
     while (lex.curTok == TOK_PLUS || lex.curTok == TOK_MINUS) {
         Token op = lex.curTok; lex.next();
-        l = std::make_unique<BinOpNode>(std::move(l), parseMulDiv(lex), op);
+        l = makeBinOp(std::move(l), parseMulDiv(lex), op);
     }
     return l;
 }
@@ -326,7 +373,7 @@ std::unique_ptr<Node> parseRel(Lexer& lex) {
     auto l = parseAddSub(lex);
     while (lex.curTok == TOK_LT || lex.curTok == TOK_GT || lex.curTok == TOK_LTE || lex.curTok == TOK_GTE) {
         Token op = lex.curTok; lex.next();
-        l = std::make_unique<BinOpNode>(std::move(l), parseAddSub(lex), op);
+        l = makeBinOp(std::move(l), parseAddSub(lex), op);
     }
     return l;
 }
@@ -335,7 +382,7 @@ std::unique_ptr<Node> parseEq(Lexer& lex) {
     auto l = parseRel(lex);
     while (lex.curTok == TOK_EQ || lex.curTok == TOK_NEQ) {
         Token op = lex.curTok; lex.next();
-        l = std::make_unique<BinOpNode>(std::move(l), parseRel(lex), op);
+        l = makeBinOp(std::move(l), parseRel(lex), op);
     }
     return l;
 }
@@ -344,7 +391,7 @@ std::unique_ptr<Node> parseAnd(Lexer& lex) {
     auto l = parseEq(lex);
     while (lex.curTok == TOK_AND) {
         lex.next();
-        l = std::make_unique<BinOpNode>(std::move(l), parseEq(lex), TOK_AND);
+        l = makeBinOp(std::move(l), parseEq(lex), TOK_AND);
     }
     return l;
 }
@@ -353,7 +400,7 @@ std::unique_ptr<Node> parseOr(Lexer& lex) {
     auto l = parseAnd(lex);
     while (lex.curTok == TOK_OR) {
         lex.next();
-        l = std::make_unique<BinOpNode>(std::move(l), parseAnd(lex), TOK_OR);
+        l = makeBinOp(std::move(l), parseAnd(lex), TOK_OR);
     }
     return l;
 }

@@ -39,7 +39,7 @@ inline MmpSong createDefaultTalaBank() {
     s.a4Hz = 440.0;
 
     auto addInst = [&](const QString& name, bool isBeat, const QString& o1, const QString& o2,
-                       bool useAdsr = false, double dec = 0.5, double sus = 0.5, double rel = 0.1) {
+                       bool useAdsr = false, double dec = 0.5, double sus = 0.5, double rel = 0.1, const QString& tfStr = "") {
         MmpTrack t;
         t.name = name;
         t.isBeatTrack = isBeat;
@@ -49,6 +49,7 @@ inline MmpSong createDefaultTalaBank() {
         t.A1 = 1.0; t.A2 = 1.0; t.A3 = 1.0;
         t.o1Str = o1;
         t.o2Str = o2;
+        t.tfStr = tfStr;
         t.useAdsr = useAdsr;
         t.dec = dec;
         t.sus = sus;
@@ -117,7 +118,10 @@ inline MmpSong createDefaultTalaBank() {
     addInst("Shankha 2", false,
             "clamp(-1, last(1) + clamp(0.02, 6.28318 * (1200 + f * 1.5 + A1 * 800) / srate, 0.96) * ( (1 - exp(-18 * t)) * exp(-0.08 * t) * (0.88 + 0.12 * sinew(5.5 * t)) * ( 0.45 * saww(integrate(f * (1 - 0.08 * exp(-25 * t)) * (1 + (0.018 + A2 * 0.04) * sinew(5.8 * t)))) + 0.35 * squarew(integrate(f * 1.001 * (1 - 0.08 * exp(-25 * t)) * (1 + (0.018 + A2 * 0.04) * sinew(5.8 * t)))) + 0.30 * sin(6.28318 * 2.0 * f * (1 + (0.018 + A2 * 0.04) * sin(6.28318 * 5.8 * t)) * t) + 0.25 * sin(6.28318 * 3.0 * f * (1 + (0.018 + A2 * 0.04) * sin(6.28318 * 5.8 * t)) * t) + (0.09 * exp(-15 * t) + 0.04) * randv(t * srate) * sin(6.28318 * 1800 * t) ) - last(1) ), 1)", "");
 
-    addInst("Harmonium_Bellows", false, defaultHarmoniumO1(), "", true, 2.0, 1.0, 0.348);
+    // Harmonium with custom dynamic Transfer Function string appended at the end
+    addInst("Harmonium_Bellows", false, defaultHarmoniumO1(), "", true, 2.0, 1.0, 0.348,
+            "((1 + 2.5 * exp(-(((freq-320)/100)^2)) + 1.2 * exp(-(((freq-1300)/200)^2))) * (1 + 0.35 * exp(-j * 2 * pi * freq * 0.002))) / sqrt(1 + (freq/7200)^8)");
+
 
     // Tala Definitions (18 Talas and Prakars)
     s.talaThekas = {

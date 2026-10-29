@@ -587,8 +587,8 @@ bool ProjectIO::exportDrumPresetsHeader(const QString& filePath, const MmpSong& 
     out << "    s.saSemitone = " << song.saSemitone << ";\n";
     out << "    s.a4Hz = " << song.a4Hz << ";\n\n";
     out << "    auto addInst = [&](const QString& name, bool isBeat, const QString& o1, const QString& o2,\n";
-    out << "                       bool useAdsr = false, double dec = 0.5, double sus = 0.5, double rel = 0.1) {\n";
-    out << "        MmpTrack t; t.name = name; t.isBeatTrack = isBeat; t.o1Str = o1; t.o2Str = o2;\n";
+    out << "                       bool useAdsr = false, double dec = 0.5, double sus = 0.5, double rel = 0.1, const QString& tfStr = \"\") {\n";
+    out << "        MmpTrack t; t.name = name; t.isBeatTrack = isBeat; t.o1Str = o1; t.o2Str = o2; t.tfStr = tfStr;\n";
     out << "        t.useAdsr = useAdsr; t.dec = dec; t.sus = sus; t.rel = rel;\n";
     out << "        ProjectIO::compileTrackAsts(t); s.tracks.push_back(std::move(t));\n    };\n\n";
 
@@ -597,7 +597,7 @@ bool ProjectIO::exportDrumPresetsHeader(const QString& filePath, const MmpSong& 
             << (t.isBeatTrack ? "true" : "false") << ",\n"
             << "        \"" << escapeCppString(t.o1Str) << "\",\n"
             << "        \"" << escapeCppString(t.o2Str) << "\", "
-            << (t.useAdsr ? "true" : "false") << ", " << t.dec << ", " << t.sus << ", " << t.rel << ");\n\n";
+            << (t.useAdsr ? "true" : "false") << ", " << t.dec << ", " << t.sus << ", " << t.rel << ", \"" << escapeCppString(t.tfStr) << "\");\n\n";
     }
 
     out << "    // Tala Definitions\n    s.talaThekas = {\n";
