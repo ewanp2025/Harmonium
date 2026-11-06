@@ -48,10 +48,10 @@ inline float fastTanh(float x) {
 
 class SynthEngine {
 public:
-    static constexpr int NUM_TRACKS      = 24;
-    static constexpr int NUM_BAKED_DRUMS = 22; // 0..19 Percussion, 20 Shankha 1, 21 Shankha 2
-    static constexpr int TRACK_HARMONIUM = 22;
-    static constexpr int TRACK_SINGING   = 23;
+    static constexpr int NUM_TRACKS        = 24;
+    static constexpr int NUM_BAKED_DRUMS   = 22; // 0..19 Percussion, 20 Shankha 1, 21 Shankha 2
+    static constexpr int TRACK_HARMONIUM   = 22;
+    static constexpr int TRACK_SINGING     = 23;
     static constexpr int VOCAL_CHAMBER_LEN = 4096;
 
     SynthEngine() : m_liveHarmoniumTf(22050.0f) {}
@@ -59,9 +59,20 @@ public:
     void init(float sampleRate = 22050.0f) {
         m_srate = std::max(8000.0f, sampleRate);
 
+        // Precompute float frequencies and Q32 fixed-point phase increments (2^32 / m_srate)
+        const double q32Scale = 4294967296.0 / static_cast<double>(m_srate);
+        m_lfoBpmPhaseScale = static_cast<uint32_t>(q32Scale / 120.0);
+
         for (int m = 0; m < 128; ++m) {
-            m_midiFreqLut[m] = m_a4Hz.load() * std::pow(2.0f, (m - 69) * (1.0f / 12.0f));
+            float f = m_a4Hz.load() * std::pow(2.0f, (m - 69) * (1.0f / 12.0f));
+            m_midiFreqLut[m]       = f;
+            m_midiPhaseIncLut[m]   = static_cast<uint32_t>(f * q32Scale);
+            m_midiCelesteIncLut[m] = static_cast<uint32_t>((f * 1.0046316f) * q32Scale); // +8 cents
         }
+
+        // Exact 1-pole fixed-point envelope multipliers for (1 - exp(-8*t)) and exp(-18*trel)
+        m_attackStepQ15 = static_cast<int32_t>(std::lround((1.0f - std::exp(-8.0f / m_srate)) * 32768.0f));
+        m_relDecayQ15   = static_cast<int32_t>(std::lround(std::exp(-18.0f / m_srate) * 32768.0f));
 
         m_liveHarmoniumTf.setSampleRate(m_srate);
         m_liveHarmoniumTf.enabled = false;
@@ -527,7 +538,6 @@ public:
                 }
             }
         }
-        // Shankha 1 pre-baked hit scheduled at tick 0
         m_trackNotes[20].push_back(SongNote(0, 240, 60, 1.0f));
 
         m_songTickPos = 0.0f;
@@ -542,7 +552,9 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
 
         const float dt = 1.0f / m_srate;
-        const float currentBpm = static_cast<float>(m_bpm.load());
+        const int bpmInt = m_bpm.load();
+        const float currentBpm = static_cast<float>(bpmInt);
+        const uint32_t lfoPhaseInc = static_cast<uint32_t>(bpmInt) * m_lfoBpmPhaseScale;
         const float beatDurationSec = 60.0f / currentBpm;
         const float ticksPerSec = (currentBpm / 60.0f) * 48.0f;
         const float secPerTick = 1.0f / ticksPerSec;
@@ -550,15 +562,23 @@ public:
         const int drumLoop = std::max(48, m_drumLoopTicks.load());
         const int saOffset = m_saSemitone.load();
 
+        // Snapshot bellows manual state once per block in Q14 (16384 = 1.0)
+        const bool posMan = m_bellowsPosManual.load();
+        const bool depMan = m_bellowsDepManual.load();
+        const int32_t manWaveQ14 = static_cast<int32_t>((m_manualBellowsPos.load() * 2.0f - 1.0f) * 16384.0f);
+        const int32_t manDepQ14  = depMan ? static_cast<int32_t>(m_manualBellowsDep.load() * 16384.0f) : 16384;
+        const int32_t pressureGainQ14 = depMan ? (819 + ((15565 * manDepQ14) >> 14)) : 16384;
+
         for (int i = 0; i < frames; ++i) {
-            float mix = 0.0f;
+            int32_t fixedMixQ14 = 0; // Master fixed-point accumulator (16384 = 1.0)
+            float floatMix = 0.0f;
 
             if (m_isPlaying.load() && !m_isPaused.load()) {
                 int cdBeats = m_countdownBeats.load();
                 if (cdBeats > 0) {
                     if (m_clickEnv > 0.001f) {
                         float clickFreq = (cdBeats == 1) ? 1200.0f : 880.0f;
-                        mix += XpressiveParser::lut().sinRad(2.0f * M_PI_F * clickFreq * m_countdownTimerSec) * m_clickEnv * 0.4f;
+                        floatMix += XpressiveParser::lut().sinRad(2.0f * M_PI_F * clickFreq * m_countdownTimerSec) * m_clickEnv * 0.4f;
                         m_clickEnv *= fastExpNeg(dt * 35.0f);
                     }
                     m_countdownTimerSec += dt;
@@ -606,51 +626,53 @@ public:
                 }
             }
 
+            // 1. Pre-baked percussion & Shankha (Q15 int16_t -> Q14 via >> 1)
             for (auto& dv : m_drumVoices) {
                 if (!dv.active) continue;
                 if (m_trackMuted[dv.trackIdx]) { dv.active = false; continue; }
                 const int16_t* pcm = m_bakedDrums[dv.trackIdx];
                 if (pcm && dv.samplePos < m_bakedDrumLen) {
-                    mix += (static_cast<float>(pcm[dv.samplePos++]) * (1.0f / 32768.0f));
+                    fixedMixQ14 += (static_cast<int32_t>(pcm[dv.samplePos++]) >> 1);
                 } else {
                     dv.active = false;
                 }
             }
 
+            // 2. Pre-baked Drone Loop (Q15 int16_t -> Q14 via >> 1)
             if (m_droneEnabled.load() && m_droneLoopBuf && m_droneLoopLen > 0) {
-                mix += static_cast<float>(m_droneLoopBuf[m_droneReadIdx]) * (1.0f / 32768.0f);
+                fixedMixQ14 += (static_cast<int32_t>(m_droneLoopBuf[m_droneReadIdx]) >> 1);
                 if (++m_droneReadIdx >= m_droneLoopLen) m_droneReadIdx = 0;
             }
 
+            // 3. Pure Fixed-Point Polyphonic Harmonium + Fixed-Point Cabinet Filter
             if (!m_trackMuted[TRACK_HARMONIUM]) {
-                float harmMix = 0.0f;
+                int32_t harmMixQ14 = 0;
                 for (auto& hv : m_harmVoices) {
                     if (!hv.active) continue;
                     if (hv.isAutoPreset && (!m_isPlaying.load() || !presetHarmOn)) {
                         hv.active = false;
                         continue;
                     }
-                    if (hv.isAutoPreset && hv.held && hv.t >= hv.autoDurSec) {
+                    if (hv.isAutoPreset && hv.held && hv.samplesElapsed >= hv.autoDurSamples) {
                         hv.held = false;
-                        hv.trel = 0.0f;
                     }
                     if (!hv.held) {
-                        hv.trel += dt;
-                        if (hv.trel > 0.38f) {
+                        hv.relEnvQ14 = (hv.relEnvQ14 * m_relDecayQ15) >> 15;
+                        if (hv.relEnvQ14 < 18) { // Below exp(-18 * 0.38s) threshold
                             hv.active = false;
                             continue;
                         }
                     }
-                    float vOut = renderFastHarmoniumSample(hv, currentBpm, dt);
-                    hv.lastOut = vOut;
-                    harmMix += vOut * hv.velocity;
-                    hv.t += dt;
+                    harmMixQ14 += renderFastHarmoniumSampleQ14(hv, lfoPhaseInc, posMan, manWaveQ14, manDepQ14, pressureGainQ14);
+                    hv.samplesElapsed++;
                 }
 
-                harmMix = m_liveHarmoniumTf.process(harmMix);
-                mix += harmMix * 0.22f;
+                harmMixQ14 = m_liveHarmoniumTf.processQ14(harmMixQ14);
+                // Scale by 0.22f (3604 in Q14)
+                fixedMixQ14 += (harmMixQ14 * 3604) >> 14;
             }
 
+            // 4. Singing Voice (only active if unmuted and song has lyrics)
             if (m_singVoice.active && !m_trackMuted[TRACK_SINGING]) {
                 if (m_singVoice.isAutoPreset && !m_isPlaying.load()) {
                     m_singVoice.active = false;
@@ -667,13 +689,14 @@ public:
                     }
                     if (m_singVoice.active) {
                         float dryVocal = renderPrecompiledSingingSample(dt);
-                        mix += processVocalChamber(dryVocal) * 0.44f;
+                        floatMix += processVocalChamber(dryVocal) * 0.44f;
                         m_singVoice.t += dt;
                     }
                 }
             }
 
-            outMono[i] = fastTanh(mix);
+            float totalMix = static_cast<float>(fixedMixQ14) * (1.0f / 16384.0f) + floatMix;
+            outMono[i] = fastTanh(totalMix);
         }
     }
 
@@ -683,11 +706,12 @@ public:
         m_detectedMidiNote.store(shifted);
 
         if (!m_trackMuted[TRACK_HARMONIUM]) {
+            int32_t velQ14 = static_cast<int32_t>(my_clamp(velocity / 127.0f, 0.15f, 1.0f) * 16384.0f);
             for (auto& hv : m_harmVoices) {
                 if (hv.active && hv.held && !hv.isAutoPreset && (hv.midiNote == shifted || hv.rawMidiNote == midiNote)) {
                     hv.midiNote = shifted;
                     hv.rawMidiNote = midiNote;
-                    hv.velocity = my_clamp(velocity / 127.0f, 0.15f, 1.0f);
+                    hv.velQ14 = velQ14;
                     return;
                 }
             }
@@ -700,11 +724,14 @@ public:
             slot->isAutoPreset = false;
             slot->midiNote = shifted;
             slot->rawMidiNote = midiNote;
-            slot->velocity = my_clamp(velocity / 127.0f, 0.15f, 1.0f);
-            slot->t = 0.0f;
-            slot->trel = 0.0f;
-            slot->lastOut = 0.0f;
-            std::memset(slot->intState, 0, sizeof(slot->intState));
+            slot->velQ14 = velQ14;
+            slot->attackEnvQ14 = 0;
+            slot->relEnvQ14 = 16384;
+            slot->samplesElapsed = 0;
+            slot->phaseLfo = 0;
+            slot->phaseVib = 0;
+            slot->phaseBase = 0;
+            slot->phaseCeleste = 0;
         }
     }
 
@@ -714,7 +741,6 @@ public:
         for (auto& hv : m_harmVoices) {
             if (hv.active && hv.held && !hv.isAutoPreset && (hv.rawMidiNote == midiNote || hv.midiNote == shifted)) {
                 hv.held = false;
-                hv.trel = 0.0f;
             }
         }
     }
@@ -823,6 +849,17 @@ public:
     void setTfEnabled(bool en) { m_liveHarmoniumTf.enabled = en; }
     bool isTfEnabled() const { return m_liveHarmoniumTf.enabled; }
 
+    void setBellowsPosManual(bool man) { m_bellowsPosManual.store(man); }
+    bool isBellowsPosManual() const { return m_bellowsPosManual.load(); }
+
+    void setBellowsDepManual(bool man) { m_bellowsDepManual.store(man); }
+    bool isBellowsDepManual() const { return m_bellowsDepManual.load(); }
+
+    void updateBellowsSensors(float posNorm01, float depNorm01) {
+        m_manualBellowsPos.store(my_clamp(posNorm01, 0.0f, 1.0f));
+        m_manualBellowsDep.store(my_clamp(depNorm01, 0.0f, 1.5f));
+    }
+
     bool isPlaying() const { return m_isPlaying.load(); }
     bool isPaused() const { return m_isPaused.load(); }
     int getSelectedTala() const { return m_currentTalaIdx.load(); }
@@ -921,18 +958,22 @@ private:
         int samplePos = 0;
     };
 
+    // Pure Fixed-Point Harmonium Voice State (Zero Float Registers)
     struct HarmoniumVoice {
         bool active = false;
         bool held = false;
         bool isAutoPreset = false;
         int midiNote = 60;
         int rawMidiNote = 60;
-        float velocity = 1.0f;
-        float t = 0.0f;
-        float trel = 0.0f;
-        float autoDurSec = 0.5f;
-        float lastOut = 0.0f;
-        float intState[16] = {0};
+        int32_t velQ14 = 16384;       // Q14 velocity (16384 = 1.0)
+        int32_t attackEnvQ14 = 0;     // Q14 1-pole attack envelope
+        int32_t relEnvQ14 = 16384;    // Q14 1-pole release envelope
+        int32_t samplesElapsed = 0;
+        int32_t autoDurSamples = 11025;
+        uint32_t phaseLfo = 0;        // Q32 phase accumulator for BPM bellows LFO
+        uint32_t phaseVib = 0;        // Q32 phase accumulator for vibrato fundamental
+        uint32_t phaseBase = 0;       // Q32 phase accumulator for principal + sub-octave
+        uint32_t phaseCeleste = 0;    // Q32 phase accumulator for +8 cent celeste reed
     };
 
     struct SingingVoice {
@@ -1408,29 +1449,55 @@ private:
         return sargam[((relSemitone % 12) + 12) % 12];
     }
 
-    inline float renderFastHarmoniumSample(HarmoniumVoice& hv, float currentBpm, float dt) {
+    // Pure 32-Bit Fixed-Point Harmonium Sample Generator (Q14 output: 16384 = 1.0)
+    inline int32_t renderFastHarmoniumSampleQ14(HarmoniumVoice& hv,
+                                                uint32_t lfoPhaseInc,
+                                                bool posMan,
+                                                int32_t manWaveQ14,
+                                                int32_t manDepQ14,
+                                                int32_t pressureGainQ14) {
         const auto& lut = XpressiveParser::lut();
-        const float f = midiToFreq(hv.midiNote);
+        const int note = my_clamp(hv.midiNote, 0, 127);
+        const uint32_t baseInc = m_midiPhaseIncLut[note];
 
-        hv.intState[0] += (currentBpm * (1.0f / 120.0f)) * dt;
-        const float lfo = lut.sinUnit(hv.intState[0]);
+        // 1. Advance BPM-synced bellows phase (Q32 wraps naturally)
+        hv.phaseLfo += lfoPhaseInc;
+        const int32_t rawWaveQ14 = posMan ? manWaveQ14 : lut.sinUnitQ14(hv.phaseLfo);
+        const int32_t lfoQ14     = (rawWaveQ14 * manDepQ14) >> 14;
 
-        hv.intState[1] += (f * (1.0f - 0.00231049f * lfo)) * dt;
-        hv.intState[2] += f * dt;
-        const float basePhase = hv.intState[2];
+        // 2. Advance reed phase accumulators (-4 cents bellows pitch drift on reed 1)
+        const int32_t vibModQ14 = (lfoQ14 * 38) >> 14; // 38/16384 = 0.002319 (-4 cents)
+        const int32_t vibDelta  = (static_cast<int32_t>(baseInc >> 10) * vibModQ14) >> 4;
+        hv.phaseVib     += static_cast<uint32_t>(static_cast<int32_t>(baseInc) - vibDelta);
+        hv.phaseBase    += baseInc;
+        hv.phaseCeleste += m_midiCelesteIncLut[note];
 
-        // Utilizing pre-summed harmonic tables from SineLUT
-        const float reed1 = (lut.sinUnit(hv.intState[1]) - 0.5f * lut.sinUnit(2.0f * basePhase)) +
-                            (0.75f + 0.25f * lfo) * lut.reedUpperUnit(basePhase);
+        // 3. Evaluate 3 coupled reed banks via branchless Q14 table lookups
+        const int32_t upperGainQ14 = my_clamp<int32_t>(12288 + (lfoQ14 >> 2), 1638, 20480); // 0.75 + 0.25*lfo
+        const int32_t reed1 = lut.sinUnitQ14(hv.phaseVib)
+                            - (lut.sinUnitQ14(hv.phaseBase << 1) >> 1)
+                            + ((upperGainQ14 * lut.reedUpperUnitQ14(hv.phaseBase)) >> 14);
 
-        const float reed2 = 0.45f * lut.reedBaseUnit(basePhase * 1.0046316f);
-        const float reed3 = 0.65f * lut.reedBaseUnit(basePhase * 0.5f);
+        const int32_t reed2 = (7373  * lut.reedBaseUnitQ14(hv.phaseCeleste)) >> 14;     // 0.45 * celeste
+        const int32_t reed3 = (10650 * lut.reedBaseUnitQ14(hv.phaseBase >> 1)) >> 14;   // 0.65 * sub-octave
+        const int32_t reedSumQ14 = reed1 + reed2 + reed3;
 
-        const float attackEnv = (hv.t < 0.7f) ? (1.0f - fastExpNeg(hv.t * 8.0f)) : 1.0f;
-        const float relEnv    = hv.held ? 1.0f : fastExpNeg(hv.trel * 18.0f);
-        const float env       = attackEnv * relEnv * (0.82f + 0.18f * lfo);
+        // 4. Update 1-pole fixed-point attack envelope (1 - exp(-8*t))
+        if (hv.attackEnvQ14 < 16360) {
+            hv.attackEnvQ14 += ((16384 - hv.attackEnvQ14) * m_attackStepQ15) >> 15;
+        } else {
+            hv.attackEnvQ14 = 16384;
+        }
 
-        return env * (reed1 + reed2 + reed3);
+        // 5. Combine attack, release, bellows breathing (0.82 + 0.18*lfo), pressure, and velocity
+        int32_t bellowsEnvQ14 = 13435 + ((2949 * lfoQ14) >> 14);
+        bellowsEnvQ14 = (bellowsEnvQ14 * pressureGainQ14) >> 14;
+
+        int32_t envQ14 = (hv.attackEnvQ14 * hv.relEnvQ14) >> 14;
+        envQ14 = (envQ14 * bellowsEnvQ14) >> 14;
+        envQ14 = (envQ14 * hv.velQ14) >> 14;
+
+        return (reedSumQ14 * envQ14) >> 14;
     }
 
     inline float midiToFreq(int midiNote) const {
@@ -1459,12 +1526,15 @@ private:
         slot->isAutoPreset = true;
         slot->midiNote = midiNote;
         slot->rawMidiNote = midiNote;
-        slot->velocity = 0.90f;
-        slot->t = 0.0f;
-        slot->trel = 0.0f;
-        slot->autoDurSec = durSec;
-        slot->lastOut = 0.0f;
-        std::memset(slot->intState, 0, sizeof(slot->intState));
+        slot->velQ14 = 14746; // 0.90 in Q14
+        slot->attackEnvQ14 = 0;
+        slot->relEnvQ14 = 16384;
+        slot->samplesElapsed = 0;
+        slot->autoDurSamples = static_cast<int32_t>(durSec * m_srate);
+        slot->phaseLfo = 0;
+        slot->phaseVib = 0;
+        slot->phaseBase = 0;
+        slot->phaseCeleste = 0;
     }
 
     void triggerSingingVoice(int midiNote, float durSec, bool isPreset, int planIdx) {
@@ -1496,6 +1566,11 @@ private:
     std::mutex m_mutex;
     float m_srate = 22050.0f;
     float m_midiFreqLut[128] = {0.0f};
+    uint32_t m_midiPhaseIncLut[128] = {0};
+    uint32_t m_midiCelesteIncLut[128] = {0};
+    uint32_t m_lfoBpmPhaseScale = 0;
+    int32_t m_attackStepQ15 = 12;
+    int32_t m_relDecayQ15 = 32741;
 
     PrecompiledFormantSlice m_formantLut[256];
     std::vector<VocalSyllablePlan> m_precompiledVocalPlans;
@@ -1538,6 +1613,11 @@ private:
 
     std::atomic<bool> m_hasSingingData{false};
     std::atomic<bool> m_userSingingEnabled{false};
+
+    std::atomic<bool>  m_bellowsPosManual{false};
+    std::atomic<bool>  m_bellowsDepManual{false};
+    std::atomic<float> m_manualBellowsPos{0.5f};
+    std::atomic<float> m_manualBellowsDep{1.0f};
 
     std::atomic<int> m_currentTalaIdx{0};
     std::atomic<int> m_currentHarmSongIdx{0};
