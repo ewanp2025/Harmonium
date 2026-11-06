@@ -14,10 +14,10 @@
 class UsbAudioOut : public UsbAudioPartner {
 public:
     void begin() {
-        m_ringL = static_cast<int16_t*>(heap_caps_malloc(RING_SIZE * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        m_ringR = static_cast<int16_t*>(heap_caps_malloc(RING_SIZE * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        if (!m_ringL) m_ringL = static_cast<int16_t*>(std::malloc(RING_SIZE * sizeof(int16_t)));
-        if (!m_ringR) m_ringR = static_cast<int16_t*>(std::malloc(RING_SIZE * sizeof(int16_t)));
+        m_ringL = static_cast<int16_t*>(heap_caps_malloc(RING_SIZE * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        m_ringR = static_cast<int16_t*>(heap_caps_malloc(RING_SIZE * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        if (!m_ringL) m_ringL = static_cast<int16_t*>(heap_caps_malloc(RING_SIZE * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!m_ringR) m_ringR = static_cast<int16_t*>(heap_caps_malloc(RING_SIZE * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         if (m_ringL) std::memset(m_ringL, 0, RING_SIZE * sizeof(int16_t));
         if (m_ringR) std::memset(m_ringR, 0, RING_SIZE * sizeof(int16_t));
 
@@ -244,7 +244,7 @@ public:
 private:
     static constexpr uint32_t NUM_ISOC_PACKETS = 4;
     static constexpr uint32_t NUM_URBS = 2;
-    static constexpr uint32_t RING_SIZE = 4096;
+    static constexpr uint32_t RING_SIZE = 1024;
     static constexpr uint32_t RING_MASK = RING_SIZE - 1;
 
     struct AltCandidate {
