@@ -16,7 +16,7 @@
 
 namespace XpressiveParser {
 
-// Replace struct SineLUT in xpressive_parser.h (lines 17-34) with:
+
 struct SineLUT {
     float table[2048];
     float reedBase[2048];  // sin(x) - 0.5*sin(2x) + (1/3)*sin(3x)
@@ -36,7 +36,7 @@ struct SineLUT {
         }
     }
     inline float sinUnit(float x) const {
-        int idx = static_cast<int>(x * 2048.0f) & 2047; // Bitmask handles wrapping directly!
+        int idx = static_cast<int>(x * 2048.0f) & 2047; // Bitmask handles wrapping directly
         return table[idx];
     }
     inline float reedBaseUnit(float x) const {
