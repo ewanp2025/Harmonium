@@ -44,7 +44,7 @@ static UsbAudioOut g_usbAudio;
 static Waveshare7QtDisplay* g_tft = nullptr;
 
 inline void initFileSystem() {}
-inline std::vector<std::string> listBankFiles() { return {"/Default_Bank.mhb"}; }
+inline std::vector<std::string> listBankFiles() { return {"Default_Bank.mhb"}; }
 inline bool saveBankToFile(const char*, int, int) { return true; }
 inline bool loadBankFromFile(const char*, int&, int&) { return true; }
 #endif
@@ -54,7 +54,9 @@ static bool g_midiConnected = false;
 
 static const char* WESTERN_NOTES[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
-// EDITOR STATE & CONSTANTS
+// ============================================================================
+// APPLICATION & MODAL STATE
+// ============================================================================
 
 enum AppView { VIEW_LIVE, VIEW_TALA_ED, VIEW_HARM_ED };
 static AppView g_currentView = VIEW_LIVE;
@@ -139,7 +141,6 @@ static void pollBellowsGpioPins() {
         int rawDep = analogRead(g_pins.belDepPin);
         depNorm = std::clamp(rawDep / 4095.0f, 0.0f, 1.2f);
     } else {
-        // No 2nd sensor wired: derive bellows pressure from pumping speed |dPos/dt|
         float speed = std::fabs(posNorm - g_prevPosNorm) * 18.0f;
         g_smoothedVelDep = std::clamp(g_smoothedVelDep * 0.92f + speed * 0.65f, 0.15f, 1.2f);
         depNorm = g_smoothedVelDep;
@@ -192,10 +193,158 @@ struct TouchButton {
 };
 
 static inline bool hitBox(const TouchButton& b, int tx, int ty) {
-    return (tx >= b.x && tx < b.x + b.w && ty >= b.y && ty < b.y + b.h);
+    return (b.w > 0 && b.h > 0 && tx >= b.x && tx < b.x + b.w && ty >= b.y && ty < b.y + b.h);
 }
 
+// ============================================================================
+// MULTI-RESOLUTION SCREEN PROFILE & LAYOUT REGISTRY
+// To add a new screen resolution in the future, add a new UiLayout struct below.
+// ============================================================================
+
+struct UiLayout {
+    int scrW;
+    int scrH;
+    bool hasVisualPiano;
+    bool compactLabels;
+
+    // Top Navigation & Hardware Bar
+    TouchButton tabLive, tabTala, tabHarm, btnAudio, btnBelPos, btnBelDep, btnGpio, btnLang;
+
+    // Live Transport Row
+    TouchButton btnStart, btnPause, btnCount;
+    TouchButton btnTalaPrev, talaBox, btnTalaNext;
+    TouchButton btnSongPrev, songBox, btnSongNext;
+    TouchButton btnBpmDown, bpmBox, btnBpmUp;
+
+    // Swara / Tuner / Drone Row
+    TouchButton swaraBox, btnSaCycle, btnDroneEn, btnDronePre, btnDroneSur;
+
+    // Talometer Bar
+    int taloY, taloH, taloStepX;
+
+    // 24-Track Grid (6 columns x 4 rows)
+    int trkStartX, trkStartY, trkStepX, trkStepY, trkW, trkH;
+
+    // Utility & Harmonium DSP Rows
+    TouchButton btnRndTala, btnRndSong, btnMidiMode, btnSingMode;
+    TouchButton btnHarmMode, btnOctDown, octLbl, btnOctUp, btnTfEn, btnEditMode;
+
+    // Visual Piano Geometry (kept in code for all builds; only drawn when hasVisualPiano == true)
+    int pianoY, pianoH;
+
+    // Footer Bar
+    int footerY, footerH;
+
+    // Editor Shared Navigation Row
+    TouchButton btnEdPrev, btnEdName, btnEdNext, btnEdNew, btnEdRand, btnEdPlay, btnEdSave;
+    TouchButton btnEdDivs, btnEdLoad;
+    int edGridY;
+};
+
+// Profile 0: 800x480 (7" Waveshare RGB Touch Display with 37-key Touch Piano)
+static const UiLayout LAYOUT_800x480 = {
+    800, 480, true, false,
+    // Top bar
+    {  6,  6,  90, 34}, {100,  6, 115, 34}, {219,  6, 115, 34}, {338,  6, 112, 34},
+    {454,  6,  86, 34}, {544,  6,  86, 34}, {634,  6,  66, 34}, {704,  6,  90, 34},
+    // Transport row
+    {  6, 46,  86, 34}, { 96, 46,  72, 34}, {172, 46,  58, 34},
+    {236, 46,  28, 34}, {266, 46, 156, 34}, {424, 46,  28, 34},
+    {458, 46,  28, 34}, {488, 46, 174, 34}, {664, 46,  28, 34},
+    {698, 46,  32, 34}, {731, 46,  30, 34}, {762, 46,  32, 34},
+    // Drone & tuner row
+    {  6, 86, 178, 34}, {190, 86, 155, 34}, {350, 86, 115, 34}, {470, 86, 155, 34}, {630, 86, 164, 34},
+    // Talometer
+    122, 18, 28,
+    // Track buttons (6x4)
+    6, 142, 132, 27, 130, 23,
+    // Utility row
+    {  6, 252, 150, 28}, {162, 252, 150, 28}, {318, 252, 200, 28}, {524, 252, 270, 28},
+    // Harmonium DSP row
+    {  6, 286, 330, 28}, {342, 286,  56, 28}, {400, 286,  60, 28}, {462, 286,  56, 28}, {524, 286, 130, 28}, {660, 286, 134, 28},
+    // Piano
+    320, 134,
+    // Footer
+    456, 24,
+    // Editor Nav
+    { 16, 46,  40, 34}, { 60, 46, 200, 34}, {264, 46,  40, 34}, {312, 46,  80, 34},
+    {400, 46, 110, 34}, {518, 46, 110, 34}, {636, 46, 100, 34},
+    { 16, 86, 130, 34}, {636, 86, 100, 34},
+    130
+};
+
+// Profile 1: 320x240 (2.8" SPI ILI9341/ST7789 Touch Display - Full Features, No Visual Piano)
+static const UiLayout LAYOUT_320x240 = {
+    320, 240, false, true,
+    // Top bar (y=2, h=22)
+    {  2,  2,  36, 22}, { 40,  2,  42, 22}, { 84,  2,  42, 22}, {128,  2,  52, 22},
+    {182,  2,  34, 22}, {218,  2,  34, 22}, {254,  2,  30, 22}, {286,  2,  32, 22},
+    // Transport row (y=26, h=22)
+    {  2, 26,  36, 22}, { 40, 26,  32, 22}, { 74, 26,  26, 22},
+    {102, 26,  14, 22}, {117, 26,  54, 22}, {172, 26,  14, 22},
+    {188, 26,  14, 22}, {203, 26,  54, 22}, {258, 26,  14, 22},
+    {274, 26,  13, 22}, {288, 26,  18, 22}, {307, 26,  11, 22},
+    // Drone & tuner row (y=50, h=22)
+    {  2, 50,  72, 22}, { 76, 50,  64, 22}, {142, 50,  52, 22}, {196, 50,  60, 22}, {258, 50,  60, 22},
+    // Talometer (y=74, h=12)
+    74, 12, 16,
+    // Track buttons (6x4 grid, y=88..163)
+    2, 88, 53, 19, 51, 17,
+    // Utility row (y=166, h=22)
+    {  2, 166,  62, 22}, { 66, 166,  62, 22}, {130, 166,  92, 22}, {224, 166,  94, 22},
+    // Harmonium DSP row (y=190, h=22)
+    {  2, 190, 118, 22}, {122, 190,  26, 22}, {150, 190,  34, 22}, {186, 190,  26, 22}, {214, 190,  50, 22}, {266, 190,  52, 22},
+    // Piano (hidden visually on 320x240)
+    240, 0,
+    // Footer (y=216, h=24)
+    216, 24,
+    // Editor Nav (y=26 & y=50)
+    {  2, 26,  20, 22}, { 24, 26,  96, 22}, {122, 26,  20, 22}, {144, 26,  38, 22},
+    {184, 26,  44, 22}, {230, 26,  44, 22}, {276, 26,  42, 22},
+    {  2, 50,  90, 20}, {230, 50,  88, 20},
+    74
+};
+
+// Profile 2: 128x64 (Monochrome LCD Keyboard Box Preview)
+static const UiLayout LAYOUT_128x64 = {
+    128, 64, false, true,
+    { 1,  1, 24, 11}, {26,  1, 24, 11}, {51,  1, 24, 11}, { 0,  0,  0,  0},
+    { 0,  0,  0,  0}, { 0,  0,  0,  0}, {76,  1, 24, 11}, {101, 1, 26, 11},
+    { 1, 13, 30, 12}, {32, 13, 24, 12}, { 0,  0,  0,  0},
+    {57, 13, 10, 12}, {68, 13, 48, 12}, {117,13, 10, 12},
+    { 1, 26, 10, 12}, {12, 26, 62, 12}, {75, 26, 10, 12},
+    {86, 26, 12, 12}, {99, 26, 16, 12}, {116,26, 11, 12},
+    { 1, 39, 52, 12}, {54, 39, 36, 12}, {91, 39, 36, 12}, { 0,  0,  0,  0}, { 0,  0,  0,  0},
+    0, 0, 6,
+    0, 0, 0, 0, 0, 0,
+    { 0,  0,  0,  0}, { 0,  0,  0,  0}, { 0,  0,  0,  0}, { 0,  0,  0,  0},
+    { 0,  0,  0,  0}, { 0,  0,  0,  0}, { 0,  0,  0,  0}, { 0,  0,  0,  0}, { 0,  0,  0,  0}, { 0,  0,  0,  0},
+    64, 0,
+    52, 12,
+    { 1, 13, 12, 11}, {14, 13, 52, 11}, {67, 13, 12, 11}, { 0,  0,  0,  0},
+    {80, 13, 22, 11}, {103,13, 24, 11}, { 0,  0,  0,  0},
+    { 1, 25, 60, 11}, {65, 25, 62, 11},
+    37
+};
+
+static int getActiveProfileIdx() {
+#ifdef ESP32
+    return SCREEN_PROFILE;
+#else
+    return g_tft ? g_tft->currentProfile() : 0;
+#endif
+}
+
+static const UiLayout& UI() {
+    int p = getActiveProfileIdx();
+    if (p == 1) return LAYOUT_320x240;
+    if (p == 2) return LAYOUT_128x64;
+    return LAYOUT_800x480;
+}
+
+// ============================================================================
 // HELPER FUNCTIONS
+// ============================================================================
 
 static std::vector<int> parseVibhags(const char* divStr) {
     std::vector<int> res;
@@ -224,63 +373,17 @@ static std::vector<std::string> getTaliKhaliLabels(const std::vector<int>& divs)
     return res;
 }
 
-// UI LAYOUT CONSTANTS
+static std::string clipText(const std::string& s, size_t maxChars) {
+    if (s.length() <= maxChars) return s;
+    return s.substr(0, maxChars);
+}
 
-static const TouchButton TAB_LIVE    = {  6,  6,  90, 34};
-static const TouchButton TAB_TALA    = {100,  6, 115, 34};
-static const TouchButton TAB_HARM    = {219,  6, 115, 34};
-static const TouchButton BTN_AUDIO   = {338,  6, 112, 34};
-static const TouchButton BTN_BEL_POS = {454,  6,  86, 34};
-static const TouchButton BTN_BEL_DEP = {544,  6,  86, 34};
-static const TouchButton BTN_GPIO    = {634,  6,  66, 34};
-static const TouchButton BTN_LANG    = {704,  6,  90, 34};
+// ============================================================================
+// TOUCH PIANO LOGIC (Preserved in all builds; only drawn when UI().hasVisualPiano)
+// ============================================================================
 
-// Live View Controls
-static const TouchButton BTN_START     = {  6,  46,  86, 34};
-static const TouchButton BTN_PAUSE     = { 96,  46,  72, 34};
-static const TouchButton BTN_COUNT     = {172,  46,  58, 34};
-static const TouchButton BTN_TALA_PREV = {236,  46,  28, 34};
-static const TouchButton BTN_TALA_NEXT = {424,  46,  28, 34};
-static const TouchButton BTN_SONG_PREV = {458,  46,  28, 34};
-static const TouchButton BTN_SONG_NEXT = {664,  46,  28, 34};
-static const TouchButton BTN_BPM_DOWN  = {698,  46,  32, 34};
-static const TouchButton BTN_BPM_UP    = {762,  46,  32, 34};
-
-// Editor Layout Shared Controls
-static const TouchButton BTN_ED_PREV  = {16,  46,  40, 34};
-static const TouchButton BTN_ED_NAME  = {60,  46, 200, 34};
-static const TouchButton BTN_ED_NEXT  = {264, 46,  40, 34};
-static const TouchButton BTN_ED_NEW   = {312, 46,  80, 34};
-static const TouchButton BTN_ED_RAND  = {400, 46, 110, 34};
-static const TouchButton BTN_ED_PLAY  = {518, 46, 110, 34};
-static const TouchButton BTN_ED_SAVE  = {636, 46, 100, 34};
-
-static const TouchButton BTN_ED_DIVS  = {16,  86, 130, 34};
-static const TouchButton BTN_ED_LOAD  = {636, 86, 100, 34};
-
-static const TouchButton BTN_SA_CYCLE  = {190,  86, 155, 34};
-static const TouchButton BTN_DRONE_EN  = {350,  86, 115, 34};
-static const TouchButton BTN_DRONE_PRE = {470,  86, 155, 34};
-static const TouchButton BTN_DRONE_SUR = {630,  86, 164, 34};
-
-// Utility Row Controls
-static const TouchButton BTN_RND_TALA  = {  6, 252, 150, 28};
-static const TouchButton BTN_RND_SONG  = {162, 252, 150, 28};
-static const TouchButton BTN_MIDI_MODE = {318, 252, 200, 28};
-static const TouchButton BTN_SING_MODE = {524, 252, 270, 28};
-
-static const TouchButton BTN_HARM_MODE = {  6, 286, 330, 28};
-static const TouchButton BTN_OCT_DOWN  = {342, 286,  56, 28};
-static const TouchButton BTN_OCT_UP    = {462, 286,  56, 28};
-static const TouchButton BTN_TF_EN     = {524, 286, 130, 28};
-static const TouchButton BTN_EDIT_MODE = {660, 286, 134, 28};
-
-static const int PIANO_Y = 320;
-static const int PIANO_H = 134;
 static const int PIANO_START_MIDI = 48;
 static const int PIANO_NUM_KEYS   = 37;
-
-// TOUCH PIANO LOGIC
 
 static inline bool isBlackKey(int midi) {
     int n = midi % 12;
@@ -288,15 +391,18 @@ static inline bool isBlackKey(int midi) {
 }
 
 static int hitTestPiano(int tx, int ty) {
-    if (ty < PIANO_Y || ty >= PIANO_Y + PIANO_H) return -1;
+    const auto& u = UI();
+    if (!u.hasVisualPiano || u.pianoH <= 0) return -1;
+    if (ty < u.pianoY || ty >= u.pianoY + u.pianoH) return -1;
+
     int whiteCount = 0;
     for (int i = 0; i < PIANO_NUM_KEYS; ++i) {
         if (!isBlackKey(PIANO_START_MIDI + i)) whiteCount++;
     }
-    float whiteW = 800.0f / whiteCount;
-    int blackH = static_cast<int>(PIANO_H * 0.60f);
+    float whiteW = static_cast<float>(u.scrW) / whiteCount;
+    int blackH = static_cast<int>(u.pianoH * 0.60f);
 
-    if (ty - PIANO_Y <= blackH) {
+    if (ty - u.pianoY <= blackH) {
         int wIdx = 0;
         for (int i = 0; i < PIANO_NUM_KEYS; ++i) {
             int midi = PIANO_START_MIDI + i;
@@ -322,148 +428,213 @@ static int hitTestPiano(int tx, int ty) {
     return -1;
 }
 
+// ============================================================================
 // DRAWING ROUTINES
+// ============================================================================
 
 static void drawButton(const TouchButton& b, const char* label, uint16_t bgCol, uint16_t borderCol = 0x5AEB, uint16_t textCol = 0xFFFF) {
-    g_tft->fillRoundRect(b.x, b.y, b.w, b.h, 4, bgCol);
-    g_tft->drawRoundRect(b.x, b.y, b.w, b.h, 4, borderCol);
+    if (b.w <= 0 || b.h <= 0) return;
+    int r = (b.h >= 24) ? 4 : 2;
+    g_tft->fillRoundRect(b.x, b.y, b.w, b.h, r, bgCol);
+    g_tft->drawRoundRect(b.x, b.y, b.w, b.h, r, borderCol);
     g_tft->setTextColor(textCol, bgCol);
     g_tft->setTextDatum(MC_DATUM);
     g_tft->drawString(label, b.x + b.w / 2, b.y + b.h / 2);
 }
 
 static void drawTabs() {
-    drawButton(TAB_LIVE, "<- BACK", g_currentView == VIEW_LIVE ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
-    drawButton(TAB_TALA, L().tabTalaEditor, g_currentView == VIEW_TALA_ED ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
-    drawButton(TAB_HARM, L().tabHarmEditor, g_currentView == VIEW_HARM_ED ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
+    const auto& u = UI();
+    const bool compact = u.compactLabels;
+
+    drawButton(u.tabLive, compact ? "LIVE" : "<- BACK",
+               g_currentView == VIEW_LIVE ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
+    drawButton(u.tabTala, compact ? (g_langIdx == 1 ? "ताल" : "TALA") : L().tabTalaEditor,
+               g_currentView == VIEW_TALA_ED ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
+    drawButton(u.tabHarm, compact ? (g_langIdx == 1 ? "राग" : "RAGA") : L().tabHarmEditor,
+               g_currentView == VIEW_HARM_ED ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
 
 #ifdef ESP32
-    const char* audLabels[] = {g_usbAudio.getStatusLabel(), "OUT: I2S", "OUT: WIFI"};
+    const char* fullAud[]  = {g_usbAudio.getStatusLabel(), "OUT: I2S", "OUT: WIFI"};
+    const char* shortAud[] = {g_usbAudio.isConnected() ? "USB:OK" : "USB", "I2S", "WIFI"};
     uint16_t audBg = (g_audioOutMode == 0 && g_usbAudio.isConnected())
                          ? rgb565(27, 94, 32)
                          : rgb565(37, 40, 48);
-    drawButton(BTN_AUDIO, audLabels[g_audioOutMode], audBg, rgb565(0, 229, 255), 0xFFFF);
+    drawButton(u.btnAudio, compact ? shortAud[g_audioOutMode] : fullAud[g_audioOutMode],
+               audBg, rgb565(0, 229, 255), 0xFFFF);
 #else
-    drawButton(BTN_AUDIO, "OUT: QT PC", rgb565(37, 40, 48), rgb565(0, 229, 255), 0xFFFF);
+    drawButton(u.btnAudio, compact ? "QT PC" : "OUT: QT PC",
+               rgb565(37, 40, 48), rgb565(0, 229, 255), 0xFFFF);
 #endif
 
     bool posMan = engine.isBellowsPosManual();
-    drawButton(BTN_BEL_POS, posMan ? "POS:MAN" : "POS:AUTO",
+    drawButton(u.btnBelPos,
+               compact ? (posMan ? "P:M" : "P:A") : (posMan ? "POS:MAN" : "POS:AUTO"),
                posMan ? rgb565(230, 81, 0) : rgb565(37, 40, 48), rgb565(255, 202, 40), 0xFFFF);
 
     bool depMan = engine.isBellowsDepManual();
-    drawButton(BTN_BEL_DEP, depMan ? "DEP:MAN" : "DEP:AUTO",
+    drawButton(u.btnBelDep,
+               compact ? (depMan ? "D:M" : "D:A") : (depMan ? "DEP:MAN" : "DEP:AUTO"),
                depMan ? rgb565(230, 81, 0) : rgb565(37, 40, 48), rgb565(255, 202, 40), 0xFFFF);
 
-    drawButton(BTN_GPIO, "PINS", rgb565(55, 71, 79), rgb565(0, 229, 255), 0xFFFF);
-    drawButton(BTN_LANG, L().menuLabel, rgb565(30, 41, 59), rgb565(0, 229, 255), rgb565(0, 229, 255));
+    drawButton(u.btnGpio, compact ? "PIN" : "PINS", rgb565(55, 71, 79), rgb565(0, 229, 255), 0xFFFF);
+    drawButton(u.btnLang, compact ? (g_langIdx == 1 ? "हिन्दी" : "EN") : L().menuLabel,
+               rgb565(30, 41, 59), rgb565(0, 229, 255), rgb565(0, 229, 255));
 }
 
 static void drawEditorNavRow(const char* name, const char* divisions) {
+    const auto& u = UI();
     const auto& lang = L();
-    drawButton(BTN_ED_PREV, "<", rgb565(74, 20, 140));
+    const bool compact = u.compactLabels;
 
-    std::string shortName = name;
-    if (shortName.length() > 18) shortName = shortName.substr(0, 18) + "..";
-    drawButton(BTN_ED_NAME, shortName.c_str(), rgb565(37, 40, 48), rgb565(255, 202, 40));
-    drawButton(BTN_ED_NEXT, ">", rgb565(74, 20, 140));
+    drawButton(u.btnEdPrev, "<", rgb565(74, 20, 140));
 
-    drawButton(BTN_ED_NEW, lang.btnEdNew, rgb565(0, 105, 92));
-    drawButton(BTN_ED_RAND, lang.btnEdRand, rgb565(106, 27, 154), rgb565(255, 235, 59));
+    std::string shortName = clipText(name ? name : "", compact ? 11 : 18);
+    drawButton(u.btnEdName, shortName.c_str(), rgb565(37, 40, 48), rgb565(255, 202, 40));
+    drawButton(u.btnEdNext, ">", rgb565(74, 20, 140));
+
+    drawButton(u.btnEdNew, compact ? "+New" : lang.btnEdNew, rgb565(0, 105, 92));
+    drawButton(u.btnEdRand, compact ? "Rnd" : lang.btnEdRand, rgb565(106, 27, 154), rgb565(255, 235, 59));
 
     bool playing = engine.isPlaying();
-    drawButton(BTN_ED_PLAY, lang.btnEdPlay, playing ? rgb565(183, 28, 28) : rgb565(27, 94, 32));
-    drawButton(BTN_ED_SAVE, lang.btnEdSave, rgb565(46, 125, 50));
+    drawButton(u.btnEdPlay, compact ? (playing ? "Stop" : "Play") : lang.btnEdPlay,
+               playing ? rgb565(183, 28, 28) : rgb565(27, 94, 32));
+    drawButton(u.btnEdSave, compact ? "Save" : lang.btnEdSave, rgb565(46, 125, 50));
 
-    std::string divStr = std::string(lang.lblEdDivisions) + divisions;
-    drawButton(BTN_ED_DIVS, divStr.c_str(), rgb565(38, 50, 56), rgb565(0, 172, 193));
-    drawButton(BTN_ED_LOAD, lang.btnEdLoad, rgb565(2, 119, 189));
+    std::string divStr = std::string(compact ? "D:" : lang.lblEdDivisions) + (divisions ? divisions : "4+4");
+    drawButton(u.btnEdDivs, divStr.c_str(), rgb565(38, 50, 56), rgb565(0, 172, 193));
+    drawButton(u.btnEdLoad, compact ? "Load" : lang.btnEdLoad, rgb565(2, 119, 189));
 }
 
 static void drawFileSelector() {
-    g_tft->fillRect(40, 30, 720, 420, rgb565(15, 20, 25));
-    g_tft->drawRect(40, 30, 720, 420, rgb565(0, 229, 255));
+    const auto& u = UI();
+    int padX = u.compactLabels ? 6 : 40;
+    int padY = u.compactLabels ? 24 : 30;
+    int mw = u.scrW - padX * 2;
+    int mh = u.scrH - padY - 6;
+
+    g_tft->fillRect(padX, padY, mw, mh, rgb565(15, 20, 25));
+    g_tft->drawRect(padX, padY, mw, mh, rgb565(0, 229, 255));
     g_tft->setTextColor(rgb565(255, 202, 40), rgb565(15, 20, 25));
     g_tft->setTextDatum(MC_DATUM);
-    g_tft->drawString("SELECT A .MHB BANK FILE TO LOAD (Tap outside to cancel)", 400, 50);
+    g_tft->drawString(u.compactLabels ? "LOAD .MHB BANK (Tap out to exit)"
+                                      : "SELECT A .MHB BANK FILE TO LOAD (Tap outside to cancel)",
+                      u.scrW / 2, padY + (u.compactLabels ? 12 : 20));
+
+    int cols = 3;
+    int cellW = (mw - 24) / cols;
+    int cellH = u.compactLabels ? 28 : 45;
+    int stepY = u.compactLabels ? 34 : 60;
+    int startY = padY + (u.compactLabels ? 26 : 70);
 
     for (size_t i = 0; i < g_fileList.size() && i < 12; ++i) {
-        TouchButton btn = {80 + static_cast<int>(i % 3) * 220, 100 + static_cast<int>(i / 3) * 60, 200, 45};
-        drawButton(btn, g_fileList[i].c_str(), rgb565(37, 40, 48), rgb565(85, 85, 85), 0xFFFF);
+        TouchButton btn = {
+            padX + 8 + static_cast<int>(i % cols) * (cellW + 4),
+            startY + static_cast<int>(i / cols) * stepY,
+            cellW,
+            cellH
+        };
+        std::string lbl = clipText(g_fileList[i], u.compactLabels ? 12 : 22);
+        drawButton(btn, lbl.c_str(), rgb565(37, 40, 48), rgb565(85, 85, 85), 0xFFFF);
     }
     if (g_fileList.empty()) {
-        g_tft->drawString("No .mhb files found in LittleFS storage.", 400, 200);
+        g_tft->drawString("No .mhb files found in LittleFS.", u.scrW / 2, u.scrH / 2);
     }
 }
 
 static void drawKeyboard() {
-    g_tft->fillRect(40, 30, 720, 420, rgb565(15, 20, 25));
-    g_tft->drawRect(40, 30, 720, 420, rgb565(0, 229, 255));
+    const auto& u = UI();
+    int padX = u.compactLabels ? 4 : 40;
+    int padY = u.compactLabels ? 24 : 30;
+    int mw = u.scrW - padX * 2;
+    int mh = u.scrH - padY - 4;
+
+    g_tft->fillRect(padX, padY, mw, mh, rgb565(15, 20, 25));
+    g_tft->drawRect(padX, padY, mw, mh, rgb565(0, 229, 255));
     g_tft->setTextColor(rgb565(255, 202, 40), rgb565(15, 20, 25));
     g_tft->setTextDatum(MC_DATUM);
-    g_tft->drawString("ENTER FILE NAME TO SAVE (without .mhb):", 400, 60);
+    g_tft->drawString(u.compactLabels ? "SAVE .MHB NAME:" : "ENTER FILE NAME TO SAVE (without .mhb):",
+                      u.scrW / 2, padY + (u.compactLabels ? 10 : 30));
 
-    g_tft->fillRect(100, 100, 600, 50, rgb565(37, 40, 48));
-    g_tft->drawRect(100, 100, 600, 50, rgb565(255, 202, 40));
+    int boxX = padX + (u.compactLabels ? 8 : 60);
+    int boxY = padY + (u.compactLabels ? 20 : 70);
+    int boxW = mw - (u.compactLabels ? 64 : 120);
+    int boxH = u.compactLabels ? 22 : 50;
+
+    g_tft->fillRect(boxX, boxY, boxW, boxH, rgb565(37, 40, 48));
+    g_tft->drawRect(boxX, boxY, boxW, boxH, rgb565(255, 202, 40));
     g_tft->setTextColor(0xFFFF, rgb565(37, 40, 48));
     std::string disp = g_kbdInput + "_";
-    g_tft->drawString(disp.c_str(), 400, 125);
+    g_tft->drawString(disp.c_str(), boxX + boxW / 2, boxY + boxH / 2);
+
+    TouchButton delBtn = u.compactLabels
+                             ? TouchButton{boxX + boxW + 4, boxY, 44, boxH}
+                             : TouchButton{630, 170, 80, 40};
+    drawButton(delBtn, "DEL", rgb565(230, 81, 0));
 
     const char* rows[] = {"1234567890-", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM_"};
-    int yStart = 170;
+    int keyStepX = u.compactLabels ? 27 : 45;
+    int keyW     = u.compactLabels ? 25 : 40;
+    int keyH     = u.compactLabels ? 24 : 40;
+    int keyStepY = u.compactLabels ? 27 : 50;
+    int yStart   = padY + (u.compactLabels ? 48 : 140);
+
     for (int r = 0; r < 4; ++r) {
-        int len = strlen(rows[r]);
-        int xStart = 400 - (len * 45) / 2;
+        int len = static_cast<int>(std::strlen(rows[r]));
+        int xStart = u.scrW / 2 - (len * keyStepX) / 2;
         for (int c = 0; c < len; ++c) {
-            TouchButton btn = {xStart + c * 45, yStart + r * 50, 40, 40};
+            TouchButton btn = {xStart + c * keyStepX, yStart + r * keyStepY, keyW, keyH};
             char k[2] = {rows[r][c], '\0'};
             drawButton(btn, k, rgb565(55, 71, 79), rgb565(0, 172, 193), 0xFFFF);
         }
     }
-    drawButton({200, 380, 120, 45}, "CANCEL", rgb565(183, 28, 28));
-    drawButton({340, 380, 120, 45}, "SPACE", rgb565(55, 71, 79));
-    drawButton({480, 380, 120, 45}, "SAVE", rgb565(46, 125, 50));
-    drawButton({630, 170, 80, 40}, "DEL", rgb565(230, 81, 0));
+
+    int botY = u.compactLabels ? (u.scrH - 30) : 380;
+    int botH = u.compactLabels ? 24 : 45;
+    int botW = u.compactLabels ? 86 : 120;
+    int cx = u.scrW / 2;
+    drawButton({cx - botW - (botW / 2) - 8, botY, botW, botH}, "CANCEL", rgb565(183, 28, 28));
+    drawButton({cx - (botW / 2),             botY, botW, botH}, "SPACE",  rgb565(55, 71, 79));
+    drawButton({cx + (botW / 2) + 8,         botY, botW, botH}, "SAVE",   rgb565(46, 125, 50));
 }
 
 static void drawTopTransportRow() {
+    const auto& u = UI();
     const auto& lang = L();
-    drawButton(BTN_START, engine.isPlaying() ? lang.btnStop : lang.btnStart,
-               engine.isPlaying() ? rgb565(183, 28, 28) : rgb565(27, 94, 32));
-    drawButton(BTN_PAUSE, engine.isPaused() ? lang.btnResume : lang.btnPause, rgb565(230, 81, 0));
+    const bool compact = u.compactLabels;
 
-    std::string cntLbl = std::string(lang.chkCountdown) + ":" + (g_useCountdown ? lang.stateOn : lang.stateOff);
-    drawButton(BTN_COUNT, cntLbl.c_str(),
+    drawButton(u.btnStart, engine.isPlaying() ? lang.btnStop : lang.btnStart,
+               engine.isPlaying() ? rgb565(183, 28, 28) : rgb565(27, 94, 32));
+    drawButton(u.btnPause, engine.isPaused() ? lang.btnResume : lang.btnPause, rgb565(230, 81, 0));
+
+    std::string cntLbl = compact
+                             ? (g_useCountdown ? "C:1" : "C:0")
+                             : (std::string(lang.chkCountdown) + ":" + (g_useCountdown ? lang.stateOn : lang.stateOff));
+    drawButton(u.btnCount, cntLbl.c_str(),
                g_useCountdown ? rgb565(0, 105, 92) : rgb565(55, 65, 81));
 
-    drawButton(BTN_TALA_PREV, "<", rgb565(0, 77, 64));
-    TouchButton talaBox = {266, 46, 156, 34};
-    std::string talaName = BuiltInPresets::getTalaThekas()[engine.getSelectedTala()].name;
-    if (talaName.size() > 18) talaName = talaName.substr(0, 18);
-    drawButton(talaBox, talaName.c_str(), rgb565(0, 77, 64), rgb565(0, 229, 255));
-    drawButton(BTN_TALA_NEXT, ">", rgb565(0, 77, 64));
+    drawButton(u.btnTalaPrev, "<", rgb565(0, 77, 64));
+    std::string talaName = clipText(BuiltInPresets::getTalaThekas()[engine.getSelectedTala()].name, compact ? 7 : 18);
+    drawButton(u.talaBox, talaName.c_str(), rgb565(0, 77, 64), rgb565(0, 229, 255));
+    drawButton(u.btnTalaNext, ">", rgb565(0, 77, 64));
 
-    drawButton(BTN_SONG_PREV, "<", rgb565(74, 20, 140));
-    TouchButton songBox = {488, 46, 174, 34};
-    std::string songName = BuiltInPresets::getHarmoniumSongs()[engine.getSelectedSong()].title;
-    if (songName.size() > 20) songName = songName.substr(0, 20);
-    drawButton(songBox, songName.c_str(), rgb565(74, 20, 140), rgb565(255, 202, 40));
-    drawButton(BTN_SONG_NEXT, ">", rgb565(74, 20, 140));
+    drawButton(u.btnSongPrev, "<", rgb565(74, 20, 140));
+    std::string songName = clipText(BuiltInPresets::getHarmoniumSongs()[engine.getSelectedSong()].title, compact ? 7 : 20);
+    drawButton(u.songBox, songName.c_str(), rgb565(74, 20, 140), rgb565(255, 202, 40));
+    drawButton(u.btnSongNext, ">", rgb565(74, 20, 140));
 
-    drawButton(BTN_BPM_DOWN, "-5", rgb565(43, 48, 60));
-    TouchButton bpmBox = {731, 46, 30, 34};
+    drawButton(u.btnBpmDown, compact ? "-" : "-5", rgb565(43, 48, 60));
     char bpmStr[12];
     std::snprintf(bpmStr, sizeof(bpmStr), "%d", engine.getBpm());
-    drawButton(bpmBox, bpmStr, rgb565(30, 34, 42));
-    drawButton(BTN_BPM_UP, "+5", rgb565(43, 48, 60));
+    drawButton(u.bpmBox, bpmStr, rgb565(30, 34, 42));
+    drawButton(u.btnBpmUp, compact ? "+" : "+5", rgb565(43, 48, 60));
 }
 
 static void drawSwaraPopup() {
+    const auto& u = UI();
     const auto& lang = L();
-    TouchButton swaraBox = {6, 86, 178, 34};
     char buf[64];
     if (engine.isPlaying() && engine.getCountdownBeats() > 0) {
-        std::snprintf(buf, sizeof(buf), "%s %d", lang.countdownPrefix, engine.getCountdownBeats());
+        std::snprintf(buf, sizeof(buf), "%s %d", u.compactLabels ? "CD:" : lang.countdownPrefix, engine.getCountdownBeats());
     } else {
         int midi = engine.getDetectedMidiNote();
         int sa = engine.getSaSemitone();
@@ -474,39 +645,56 @@ static void drawSwaraPopup() {
         if (octOff < 0) sw = "'" + sw;
         else if (octOff > 0) sw += "'";
         int westOct = (midi / 12) - 1;
-        std::snprintf(buf, sizeof(buf), "%s %s (%s%d)", lang.swaraPopupPrefix, sw.c_str(), WESTERN_NOTES[midi % 12], westOct);
+        if (u.compactLabels) {
+            std::snprintf(buf, sizeof(buf), "%s (%s%d)", sw.c_str(), WESTERN_NOTES[midi % 12], westOct);
+        } else {
+            std::snprintf(buf, sizeof(buf), "%s %s (%s%d)", lang.swaraPopupPrefix, sw.c_str(), WESTERN_NOTES[midi % 12], westOct);
+        }
     }
-    drawButton(swaraBox, buf, rgb565(13, 37, 56), rgb565(0, 229, 255), rgb565(0, 229, 255));
+    drawButton(u.swaraBox, buf, rgb565(13, 37, 56), rgb565(0, 229, 255), rgb565(0, 229, 255));
 }
 
 static void drawDroneAndTunerRow() {
+    const auto& u = UI();
     const auto& lang = L();
+    const bool compact = u.compactLabels;
+
     drawSwaraPopup();
 
-    std::string saStr = std::string(lang.saKeyPrefix) + lang.indianKeyLabels[engine.getSaSemitone()];
-    drawButton(BTN_SA_CYCLE, saStr.c_str(), rgb565(37, 40, 48));
+    std::string saStr = compact
+                            ? (std::string("Sa:") + WESTERN_NOTES[engine.getSaSemitone()])
+                            : (std::string(lang.saKeyPrefix) + lang.indianKeyLabels[engine.getSaSemitone()]);
+    drawButton(u.btnSaCycle, saStr.c_str(), rgb565(37, 40, 48));
 
     bool dEn = engine.isDroneEnabled();
-    drawButton(BTN_DRONE_EN, dEn ? lang.btnDroneOn : lang.btnDroneOff,
+    const char* dLbl = compact ? (dEn ? "DRN:ON" : "DRN:OFF") : (dEn ? lang.btnDroneOn : lang.btnDroneOff);
+    drawButton(u.btnDroneEn, dLbl,
                dEn ? rgb565(245, 127, 23) : rgb565(66, 66, 66),
                0xFFFF, dEn ? 0x0000 : 0xFFFF);
 
-    const char* presetLbl = lang.dronePresetBoth;
-    if (engine.getDronePreset() == 0) presetLbl = lang.dronePresetShruti;
-    else if (engine.getDronePreset() == 1) presetLbl = lang.dronePresetTanpura;
-    drawButton(BTN_DRONE_PRE, presetLbl, rgb565(37, 40, 48));
+    const char* presetLbl = compact ? "Shr+Tan" : lang.dronePresetBoth;
+    if (engine.getDronePreset() == 0) presetLbl = compact ? "Shruti" : lang.dronePresetShruti;
+    else if (engine.getDronePreset() == 1) presetLbl = compact ? "Tanpura" : lang.dronePresetTanpura;
+    drawButton(u.btnDronePre, presetLbl, rgb565(37, 40, 48));
 
-    const char* surLbls[4] = {lang.droneSurSaPa, lang.droneSurSaMa, lang.droneSurSaNi, lang.droneSurSaOnly};
-    drawButton(BTN_DRONE_SUR, surLbls[engine.getDroneSwaraMode() % 4], rgb565(37, 40, 48));
+    const char* surLblsFull[4]  = {lang.droneSurSaPa, lang.droneSurSaMa, lang.droneSurSaNi, lang.droneSurSaOnly};
+    const char* surLblsShort[4] = {"S-P-S", "S-m-S", "S-N-S", "S-S"};
+    int surMode = engine.getDroneSwaraMode() % 4;
+    drawButton(u.btnDroneSur, compact ? surLblsShort[surMode] : surLblsFull[surMode], rgb565(37, 40, 48));
 }
 
 static TouchButton getTrackButtonRect(int idx) {
+    const auto& u = UI();
+    if (u.trkW <= 0 || u.trkH <= 0) return {0, 0, 0, 0};
     int col = idx % 6;
     int row = idx / 6;
-    return {6 + col * 132, 142 + row * 27, 130, 23};
+    return {u.trkStartX + col * u.trkStepX, u.trkStartY + row * u.trkStepY, u.trkW, u.trkH};
 }
 
 static void drawTrackButtons() {
+    const auto& u = UI();
+    if (u.trkW <= 0) return;
+
     const auto& lang = L();
     const auto& trks = BuiltInPresets::getTracks();
     int numTracks = std::min(static_cast<int>(trks.size()), SynthEngine::NUM_TRACKS);
@@ -519,8 +707,14 @@ static void drawTrackButtons() {
 
         bool muted = engine.isTrackMuted(i);
         std::string dispName = lang.translateTrackName(trks[i].name);
-        if (dispName == "Singing_Voice") dispName = (g_langIdx == 1) ? "गायन (Voice)" : "Voice";
-        std::string lbl = dispName + " [" + (muted ? lang.stateOff : lang.stateOn) + "]";
+        if (dispName == "Singing_Voice") dispName = (g_langIdx == 1) ? "गायन" : "Voice";
+
+        std::string lbl;
+        if (u.compactLabels) {
+            lbl = clipText(dispName, 6);
+        } else {
+            lbl = dispName + " [" + (muted ? lang.stateOff : lang.stateOn) + "]";
+        }
         drawButton(b, lbl.c_str(),
                    muted ? rgb565(55, 71, 79) : rgb565(46, 125, 50),
                    muted ? rgb565(85, 85, 85) : rgb565(129, 199, 132));
@@ -528,50 +722,70 @@ static void drawTrackButtons() {
 }
 
 static void drawUtilityRow() {
+    const auto& u = UI();
+    if (u.btnRndTala.w <= 0) return;
+
     const auto& lang = L();
-    drawButton(BTN_RND_TALA, "RND TALA", rgb565(0, 121, 107), rgb565(255, 235, 59));
-    drawButton(BTN_RND_SONG, "RND RAGA", rgb565(106, 27, 154), rgb565(255, 235, 59));
+    const bool compact = u.compactLabels;
+
+    drawButton(u.btnRndTala, compact ? "RND TAL" : "RND TALA", rgb565(0, 121, 107), rgb565(255, 235, 59));
+    drawButton(u.btnRndSong, compact ? "RND RAG" : "RND RAGA", rgb565(106, 27, 154), rgb565(255, 235, 59));
 
     int m = engine.getMidiInMode();
-    const char* mStr = (m == 0) ? "IN: DUAL (H+D)" : (m == 1) ? "IN: SPLIT (<52)" : (m == 2) ? "IN: HARM ONLY" : "IN: DRUM ONLY";
-    drawButton(BTN_MIDI_MODE, mStr, rgb565(55, 71, 79));
+    const char* mStrFull  = (m == 0) ? "IN: DUAL (H+D)" : (m == 1) ? "IN: SPLIT (<52)" : (m == 2) ? "IN: HARM ONLY" : "IN: DRUM ONLY";
+    const char* mStrShort = (m == 0) ? "MIDI:DUAL" : (m == 1) ? "MIDI:SPLT" : (m == 2) ? "MIDI:HARM" : "MIDI:DRUM";
+    drawButton(u.btnMidiMode, compact ? mStrShort : mStrFull, rgb565(55, 71, 79));
 
     if (engine.hasSingingData()) {
         bool singOn = engine.isSingingEnabled();
-        std::string singLbl = (g_langIdx == 1)
-                                  ? (std::string("गायन (VOICE): ") + (singOn ? lang.stateOn : lang.stateOff))
-                                  : (std::string("SINGING VOICE: ") + (singOn ? lang.stateOn : lang.stateOff));
-        drawButton(BTN_SING_MODE, singLbl.c_str(),
+        std::string singLbl;
+        if (compact) {
+            singLbl = (g_langIdx == 1) ? (singOn ? "गायन:1" : "गायन:0") : (singOn ? "VOICE:ON" : "VOICE:OFF");
+        } else {
+            singLbl = (g_langIdx == 1)
+                          ? (std::string("गायन (VOICE): ") + (singOn ? lang.stateOn : lang.stateOff))
+                          : (std::string("SINGING VOICE: ") + (singOn ? lang.stateOn : lang.stateOff));
+        }
+        drawButton(u.btnSingMode, singLbl.c_str(),
                    singOn ? rgb565(194, 24, 91) : rgb565(55, 71, 79),
                    singOn ? rgb565(255, 128, 171) : rgb565(100, 116, 139));
     } else {
-        g_tft->fillRect(BTN_SING_MODE.x, BTN_SING_MODE.y, BTN_SING_MODE.w, BTN_SING_MODE.h, rgb565(22, 25, 30));
+        g_tft->fillRect(u.btnSingMode.x, u.btnSingMode.y, u.btnSingMode.w, u.btnSingMode.h, rgb565(22, 25, 30));
     }
 }
 
 static void drawHarmoniumDspRow() {
+    const auto& u = UI();
+    if (u.btnHarmMode.w <= 0) return;
+
     const auto& lang = L();
+    const bool compact = u.compactLabels;
     bool presetOn = engine.isHarmoniumPresetMode();
-    drawButton(BTN_HARM_MODE,
-               presetOn ? lang.btnHarmPresetOn : lang.btnHarmPresetOff,
+
+    const char* harmLbl = compact
+                              ? (presetOn ? "HARM:PRESET" : "HARM:LIVE")
+                              : (presetOn ? lang.btnHarmPresetOn : lang.btnHarmPresetOff);
+    drawButton(u.btnHarmMode, harmLbl,
                presetOn ? rgb565(239, 108, 0) : rgb565(0, 105, 92));
 
-    drawButton(BTN_OCT_DOWN, lang.btnOctDown, rgb565(43, 48, 60));
-    TouchButton octLbl = {400, 286, 60, 28};
+    drawButton(u.btnOctDown, compact ? "O-" : lang.btnOctDown, rgb565(43, 48, 60));
     char octBuf[32];
-    std::snprintf(octBuf, sizeof(octBuf), "%s %d", lang.lblOctavePrefix, engine.getOctaveShift());
-    drawButton(octLbl, octBuf, rgb565(22, 25, 30));
-    drawButton(BTN_OCT_UP, lang.btnOctUp, rgb565(43, 48, 60));
+    std::snprintf(octBuf, sizeof(octBuf), "%s%d", compact ? "O:" : lang.lblOctavePrefix, engine.getOctaveShift());
+    drawButton(u.octLbl, octBuf, rgb565(22, 25, 30));
+    drawButton(u.btnOctUp, compact ? "O+" : lang.btnOctUp, rgb565(43, 48, 60));
 
     bool tfOn = engine.isTfEnabled();
-    drawButton(BTN_TF_EN, tfOn ? "FX: ON" : "FX: OFF",
+    drawButton(u.btnTfEn, tfOn ? "FX:ON" : "FX:OFF",
                tfOn ? rgb565(40, 53, 147) : rgb565(51, 51, 51));
 
-    drawButton(BTN_EDIT_MODE, "EDITORS", rgb565(60, 60, 70));
+    drawButton(u.btnEditMode, compact ? "EDIT" : "EDITORS", rgb565(60, 60, 70));
 }
 
 static void drawTalometerLEDs() {
-    g_tft->fillRect(0, 120, 800, 20, rgb565(22, 25, 30));
+    const auto& u = UI();
+    if (u.taloH <= 0) return;
+
+    g_tft->fillRect(0, u.taloY, u.scrW, u.taloH, rgb565(22, 25, 30));
 
     int curMatra = engine.getCurrentMatra() - 1;
     int talaIdx = engine.getSelectedTala();
@@ -584,43 +798,49 @@ static void drawTalometerLEDs() {
     for (int v : vibhags) totalMatras += v;
     if (totalMatras <= 0) return;
 
-    int startX = 400 - (totalMatras * 28) / 2;
-    int yCenter = 130;
+    int stepX = std::min(u.taloStepX, (u.scrW - 8) / totalMatras);
+    int ledW  = std::max(4, stepX - 4);
+    int ledH  = std::max(6, u.taloH - 4);
+    int startX = (u.scrW - (totalMatras * stepX)) / 2;
+    int ledY   = u.taloY + (u.taloH - ledH) / 2;
 
     int gMatra = 0;
     for (size_t v = 0; v < vibhags.size(); ++v) {
         bool isKhali = (tkLabels[v] == "0");
 
         for (int m = 0; m < vibhags[v]; ++m) {
-            int cx = startX + gMatra * 28 + 14;
+            int lx = startX + gMatra * stepX + 2;
             bool active = (gMatra == curMatra && engine.isPlaying() && engine.getCountdownBeats() == 0);
             uint16_t color;
 
             if (m == 0) {
                 if (isKhali) {
-                    color = active ? rgb565(0, 255, 0) : rgb565(0, 70, 0);
+                    color = active ? rgb565(0, 255, 0) : rgb565(0, 75, 0);
                 } else {
-                    color = active ? rgb565(255, 50, 50) : rgb565(100, 0, 0);
+                    color = active ? rgb565(255, 50, 50) : rgb565(110, 0, 0);
                 }
             } else {
-                color = active ? rgb565(255, 202, 40) : rgb565(80, 60, 0);
+                color = active ? rgb565(255, 202, 40) : rgb565(85, 65, 0);
             }
-            (void)cx;
-            (void)yCenter;
-            (void)color;
+
+            g_tft->fillRoundRect(lx, ledY, ledW, ledH, 2, color);
+            g_tft->drawRoundRect(lx, ledY, ledW, ledH, 2, active ? 0xFFFF : rgb565(120, 120, 120));
             gMatra++;
         }
     }
 }
 
 static void drawPianoKeyboard(int activeMidi = -1) {
+    const auto& u = UI();
+    if (!u.hasVisualPiano || u.pianoH <= 0) return;
+
     const auto& lang = L();
     int whiteCount = 0;
     for (int i = 0; i < PIANO_NUM_KEYS; ++i) {
         if (!isBlackKey(PIANO_START_MIDI + i)) whiteCount++;
     }
-    float whiteW = 800.0f / whiteCount;
-    int blackH = static_cast<int>(PIANO_H * 0.60f);
+    float whiteW = static_cast<float>(u.scrW) / whiteCount;
+    int blackH = static_cast<int>(u.pianoH * 0.60f);
     int sa = engine.getSaSemitone();
 
     int wIdx = 0;
@@ -635,14 +855,14 @@ static void drawPianoKeyboard(int activeMidi = -1) {
 
         uint16_t fillCol = active ? rgb565(0, 229, 255)
                                   : (isSa ? rgb565(255, 243, 205) : rgb565(245, 245, 245));
-        g_tft->fillRect(x, PIANO_Y, w, PIANO_H, fillCol);
-        g_tft->drawRect(x, PIANO_Y, w, PIANO_H, rgb565(51, 51, 51));
+        g_tft->fillRect(x, u.pianoY, w, u.pianoH, fillCol);
+        g_tft->drawRect(x, u.pianoY, w, u.pianoH, rgb565(51, 51, 51));
 
         int rel = (midi - sa + 120) % 12;
         g_tft->setTextColor(0x0000, fillCol);
         g_tft->setTextDatum(BC_DATUM);
-        g_tft->drawString(lang.swaraNames[rel], x + w / 2, PIANO_Y + PIANO_H - 18);
-        g_tft->drawString(WESTERN_NOTES[midi % 12], x + w / 2, PIANO_Y + PIANO_H - 3);
+        g_tft->drawString(lang.swaraNames[rel], x + w / 2, u.pianoY + u.pianoH - 18);
+        g_tft->drawString(WESTERN_NOTES[midi % 12], x + w / 2, u.pianoY + u.pianoH - 3);
         wIdx++;
     }
 
@@ -658,39 +878,54 @@ static void drawPianoKeyboard(int activeMidi = -1) {
         bool active = (midi == activeMidi);
         uint16_t fillCol = active ? rgb565(255, 152, 0) : rgb565(27, 27, 27);
 
-        g_tft->fillRect(x, PIANO_Y, w, blackH, fillCol);
-        g_tft->drawRect(x, PIANO_Y, w, blackH, 0x0000);
+        g_tft->fillRect(x, u.pianoY, w, blackH, fillCol);
+        g_tft->drawRect(x, u.pianoY, w, blackH, 0x0000);
 
         int rel = (midi - sa + 120) % 12;
         g_tft->setTextColor(0xFFFF, fillCol);
         g_tft->setTextDatum(BC_DATUM);
-        g_tft->drawString(lang.swaraNames[rel], x + w / 2, PIANO_Y + blackH - 4);
+        g_tft->drawString(lang.swaraNames[rel], x + w / 2, u.pianoY + blackH - 4);
     }
 }
 
 static void drawFooter() {
+    const auto& u = UI();
     const auto& lang = L();
-    g_tft->fillRect(0, 456, 800, 24, rgb565(22, 25, 30));
+
+    g_tft->fillRect(0, u.footerY, u.scrW, u.footerH, rgb565(22, 25, 30));
     g_tft->setTextColor(rgb565(200, 200, 200), rgb565(22, 25, 30));
     g_tft->setTextDatum(ML_DATUM);
 
     const char* sTitle = BuiltInPresets::getHarmoniumSongs()[engine.getSelectedSong()].title;
     const char* tName  = BuiltInPresets::getTalaThekas()[engine.getSelectedTala()].name;
     char leftBuf[160];
-    std::snprintf(leftBuf, sizeof(leftBuf), "%s: %s | %s: %s (%s %d/%d)",
-                  lang.footerSongLbl, sTitle, lang.footerTalaLbl, tName,
-                  lang.footerMatraLbl, engine.getCurrentMatra(), engine.getDrumLoopMatras());
-    g_tft->drawString(leftBuf, 8, 468);
+
+    if (u.compactLabels) {
+        std::snprintf(leftBuf, sizeof(leftBuf), "M:%d/%d | %s",
+                      engine.getCurrentMatra(), engine.getDrumLoopMatras(),
+                      clipText(tName, 14).c_str());
+    } else {
+        std::snprintf(leftBuf, sizeof(leftBuf), "%s: %s | %s: %s (%s %d/%d)",
+                      lang.footerSongLbl, sTitle, lang.footerTalaLbl, tName,
+                      lang.footerMatraLbl, engine.getCurrentMatra(), engine.getDrumLoopMatras());
+    }
+    g_tft->drawString(leftBuf, 4, u.footerY + u.footerH / 2);
 
     g_tft->setTextDatum(MR_DATUM);
     g_tft->setTextColor(g_midiConnected ? rgb565(0, 229, 255) : rgb565(160, 160, 160),
                         rgb565(22, 25, 30));
-    g_tft->drawString(g_midiConnected ? lang.midiConnected : lang.midiPcMode, 792, 468);
+    const char* midiLbl = u.compactLabels
+                              ? (g_midiConnected ? "MIDI:OK" : "MIDI:WAIT")
+                              : (g_midiConnected ? lang.midiConnected : lang.midiPcMode);
+    g_tft->drawString(midiLbl, u.scrW - 4, u.footerY + u.footerH / 2);
 }
 
-// WINDOWS EDITOR LAYOUTS
+// ============================================================================
+// PATTERN EDITORS & MODALS (Responsive across 800x480 and 320x240)
+// ============================================================================
 
 static void drawTalaEditor() {
+    const auto& u = UI();
     auto& kt = const_cast<std::vector<TalaTheka>&>(BuiltInPresets::getTalaThekas())[engine.getSelectedTala()];
     drawEditorNavRow(kt.name, kt.divisions);
 
@@ -698,27 +933,37 @@ static void drawTalaEditor() {
     auto tkLabels = getTaliKhaliLabels(vibhags);
     int globalMatra = 0;
 
+    int padX  = u.compactLabels ? 4 : 16;
+    int stepX = (u.scrW - padX * 2) / 8;
+    int cellW = stepX - 2;
+    int hdrH  = u.compactLabels ? 16 : 24;
+    int bolH  = u.compactLabels ? 24 : 36;
+    int karH  = u.compactLabels ? 24 : 36;
+    int rowH  = hdrH + bolH + karH + (u.compactLabels ? 6 : 24);
+
     for (size_t v = 0; v < vibhags.size(); ++v) {
         for (int m = 0; m < vibhags[v]; ++m) {
             int screenRow = globalMatra / 8;
             int screenCol = globalMatra % 8;
-            int bx = 16 + screenCol * 96;
-            int by = 130 + screenRow * 120;
+            int bx = padX + screenCol * stepX;
+            int by = u.edGridY + screenRow * rowH;
 
             char mBuf[32];
-            if (m == 0) std::snprintf(mBuf, sizeof(mBuf), "[%s] M%d", tkLabels[v].c_str(), globalMatra + 1);
+            if (m == 0) std::snprintf(mBuf, sizeof(mBuf), "[%s]%d", tkLabels[v].c_str(), globalMatra + 1);
             else        std::snprintf(mBuf, sizeof(mBuf), "M%d", globalMatra + 1);
 
-            TouchButton headerBtn = {bx, by, 90, 24};
+            TouchButton headerBtn = {bx, by, cellW, hdrH};
             drawButton(headerBtn, mBuf, rgb565(38, 50, 56), rgb565(0, 172, 193), rgb565(0, 229, 255));
 
-            TouchButton bolBtn = {bx, by + 28, 90, 36};
+            TouchButton bolBtn = {bx, by + hdrH + 1, cellW, bolH};
             const char* curBol = (globalMatra < static_cast<int>(kt.bolCells.size())) ? kt.bolCells[globalMatra] : "-";
-            drawButton(bolBtn, curBol, rgb565(37, 40, 48), rgb565(85, 85, 85), 0xFFFF);
+            std::string bolStr = clipText(curBol, u.compactLabels ? 5 : 12);
+            drawButton(bolBtn, bolStr.c_str(), rgb565(37, 40, 48), rgb565(85, 85, 85), 0xFFFF);
 
-            TouchButton kartalBtn = {bx, by + 68, 90, 36};
+            TouchButton kartalBtn = {bx, by + hdrH + bolH + 2, cellW, karH};
             const char* curKar = (globalMatra < static_cast<int>(kt.kartalCells.size())) ? kt.kartalCells[globalMatra] : "-";
-            drawButton(kartalBtn, curKar, rgb565(26, 35, 46), rgb565(60, 60, 60), rgb565(200, 200, 200));
+            std::string karStr = clipText(curKar, u.compactLabels ? 5 : 12);
+            drawButton(kartalBtn, karStr.c_str(), rgb565(26, 35, 46), rgb565(60, 60, 60), rgb565(200, 200, 200));
 
             globalMatra++;
         }
@@ -726,6 +971,7 @@ static void drawTalaEditor() {
 }
 
 static void drawHarmEditor() {
+    const auto& u = UI();
     auto& hs = const_cast<std::vector<HarmoniumSong>&>(BuiltInPresets::getHarmoniumSongs())[engine.getSelectedSong()];
     drawEditorNavRow(hs.title, hs.divisions);
 
@@ -736,17 +982,23 @@ static void drawHarmEditor() {
 
     int totalMatras = 0;
     for (int v : vibhags) totalMatras += v;
-    int cellW = (totalMatras > 0) ? (768 / totalMatras) : 48;
-    if (cellW > 64) cellW = 64;
+    if (totalMatras <= 0) totalMatras = 8;
+
+    int padX  = u.compactLabels ? 4 : 16;
+    int maxCW = u.compactLabels ? 36 : 64;
+    int cellW = std::min(maxCW, (u.scrW - padX * 2) / totalMatras);
+    int hdrH  = u.compactLabels ? 18 : 24;
+    int rowH  = u.compactLabels ? 28 : 42;
+    int btnH  = rowH - (u.compactLabels ? 3 : 4);
 
     int globalMatra = 0;
     for (size_t v = 0; v < vibhags.size(); ++v) {
         for (int m = 0; m < vibhags[v]; ++m) {
             char mBuf[32];
-            if (m == 0) std::snprintf(mBuf, sizeof(mBuf), "[%s] M%d", tkLabels[v].c_str(), globalMatra + 1);
-            else        std::snprintf(mBuf, sizeof(mBuf), "M%d", globalMatra + 1);
+            if (m == 0) std::snprintf(mBuf, sizeof(mBuf), "%s%d", tkLabels[v].c_str(), globalMatra + 1);
+            else        std::snprintf(mBuf, sizeof(mBuf), "%d", globalMatra + 1);
 
-            TouchButton hBtn = {16 + globalMatra * cellW, 130, cellW - 2, 24};
+            TouchButton hBtn = {padX + globalMatra * cellW, u.edGridY, cellW - 1, hdrH};
             drawButton(hBtn, mBuf, (m == 0) ? rgb565(38, 50, 56) : rgb565(30, 34, 42),
                        (m == 0) ? rgb565(0, 172, 193) : rgb565(85, 85, 85),
                        (m == 0) ? rgb565(0, 229, 255) : rgb565(170, 170, 170));
@@ -754,10 +1006,11 @@ static void drawHarmEditor() {
         }
     }
 
+    int rowsY = u.edGridY + hdrH + (u.compactLabels ? 3 : 6);
     for (int r = 0; r < form.numRows; ++r) {
         for (int c = 0; c < totalMatras; ++c) {
             int cellIdx = r * totalMatras + c;
-            TouchButton sBtn = {16 + c * cellW, 160 + r * 42, cellW - 2, 38};
+            TouchButton sBtn = {padX + c * cellW, rowsY + r * rowH, cellW - 1, btnH};
             const char* curSwara = (cellIdx < static_cast<int>(form.swaraCells.size())) ? form.swaraCells[cellIdx] : "-";
             drawButton(sBtn, curSwara, rgb565(26, 36, 46), rgb565(0, 172, 193), 0xFFFF);
         }
@@ -765,57 +1018,92 @@ static void drawHarmEditor() {
 }
 
 static void drawModalSelector() {
-    g_tft->fillRect(40, 30, 720, 420, rgb565(15, 20, 25));
-    g_tft->drawRect(40, 30, 720, 420, rgb565(0, 229, 255));
+    const auto& u = UI();
+    int padX = u.compactLabels ? 4 : 40;
+    int padY = u.compactLabels ? 24 : 30;
+    int mw   = u.scrW - padX * 2;
+    int mh   = u.scrH - padY - 4;
+
+    g_tft->fillRect(padX, padY, mw, mh, rgb565(15, 20, 25));
+    g_tft->drawRect(padX, padY, mw, mh, rgb565(0, 229, 255));
     g_tft->setTextColor(rgb565(255, 202, 40), rgb565(15, 20, 25));
     g_tft->setTextDatum(MC_DATUM);
-    g_tft->drawString("SELECT VALUE (Tap to apply, tap outside to cancel)", 400, 50);
+    g_tft->drawString(u.compactLabels ? "SELECT VALUE (Tap outside to exit)"
+                                      : "SELECT VALUE (Tap to apply, tap outside to cancel)",
+                      u.scrW / 2, padY + (u.compactLabels ? 10 : 20));
 
     const char** list = nullptr;
     int count = 0;
-
     if (g_modalState == MODAL_BOL) { list = VALID_BOLS; count = NUM_VALID_BOLS; }
     else if (g_modalState == MODAL_KARTAL) { list = VALID_KARTALS; count = NUM_VALID_KARTALS; }
     else if (g_modalState == MODAL_SWARA) { list = VALID_SWARAS; count = NUM_VALID_SWARAS; }
 
-    int cols = 6;
-    int cellW = 100, cellH = 45;
-    int startX = 400 - (cols * (cellW + 10)) / 2;
-    int startY = 80;
+    int cols   = 6;
+    int gapX   = u.compactLabels ? 3 : 10;
+    int gapY   = u.compactLabels ? 4 : 10;
+    int cellW  = (mw - (cols + 1) * gapX) / cols;
+    int cellH  = u.compactLabels ? 30 : 45;
+    int startX = u.scrW / 2 - (cols * (cellW + gapX)) / 2;
+    int startY = padY + (u.compactLabels ? 22 : 50);
 
     for (int i = 0; i < count; ++i) {
         int c = i % cols;
         int r = i / cols;
-        TouchButton btn = {startX + c * (cellW + 10), startY + r * (cellH + 10), cellW, cellH};
-        drawButton(btn, list[i], rgb565(37, 40, 48), rgb565(85, 85, 85), 0xFFFF);
+        TouchButton btn = {startX + c * (cellW + gapX), startY + r * (cellH + gapY), cellW, cellH};
+        std::string lbl = clipText(list[i], u.compactLabels ? 7 : 16);
+        drawButton(btn, lbl.c_str(), rgb565(37, 40, 48), rgb565(85, 85, 85), 0xFFFF);
     }
 }
 
 static void drawGpioModal() {
-    g_tft->fillRect(60, 44, 680, 400, rgb565(15, 20, 25));
-    g_tft->drawRect(60, 44, 680, 400, rgb565(0, 229, 255));
+    const auto& u = UI();
+    int padX = u.compactLabels ? 4 : 60;
+    int padY = u.compactLabels ? 24 : 44;
+    int mw   = u.scrW - padX * 2;
+    int mh   = u.scrH - padY - 4;
+
+    g_tft->fillRect(padX, padY, mw, mh, rgb565(15, 20, 25));
+    g_tft->drawRect(padX, padY, mw, mh, rgb565(0, 229, 255));
     g_tft->setTextColor(rgb565(255, 202, 40), rgb565(15, 20, 25));
     g_tft->setTextDatum(MC_DATUM);
-    g_tft->drawString("BOARD GPIO & I2S AUDIO DAC PIN SETUP", 400, 68);
+    g_tft->drawString(u.compactLabels ? "GPIO & I2S DAC PIN SETUP" : "BOARD GPIO & I2S AUDIO DAC PIN SETUP",
+                      u.scrW / 2, padY + (u.compactLabels ? 10 : 24));
 
-    const char* labels[5] = {
+    const char* labelsFull[5] = {
         "I2S Audio BCLK (Bit Clock):",
         "I2S Audio LRCK / WS (Word Sel):",
         "I2S Audio DOUT (Data Out):",
         "Bellows POS (Position ADC Pin):",
         "Bellows DEP (Depth/Press Pin):"
     };
+    const char* labelsShort[5] = {
+        "I2S BCLK:",
+        "I2S LRCK:",
+        "I2S DOUT:",
+        "Bel POS:",
+        "Bel DEP:"
+    };
     int vals[5] = {g_pins.i2sBclk, g_pins.i2sLrck, g_pins.i2sDout, g_pins.belPosPin, g_pins.belDepPin};
 
+    int startY = padY + (u.compactLabels ? 22 : 60);
+    int stepY  = u.compactLabels ? 30 : 52;
+    int rowH   = u.compactLabels ? 24 : 36;
+    int lblX   = padX + (u.compactLabels ? 8 : 30);
+    int minusX = u.compactLabels ? 140 : 430;
+    int minusW = u.compactLabels ? 32  : 56;
+    int valX   = u.compactLabels ? 176 : 494;
+    int valW   = u.compactLabels ? 96  : 110;
+    int plusX  = u.compactLabels ? 276 : 612;
+
     for (int i = 0; i < 5; ++i) {
-        int ry = 104 + i * 52;
+        int ry = startY + i * stepY;
         g_tft->setTextColor(0xFFFF, rgb565(15, 20, 25));
         g_tft->setTextDatum(ML_DATUM);
-        g_tft->drawString(labels[i], 90, ry + 18);
+        g_tft->drawString(u.compactLabels ? labelsShort[i] : labelsFull[i], lblX, ry + rowH / 2);
 
-        TouchButton btnMinus = {430, ry, 56, 36};
-        TouchButton valBox   = {494, ry, 110, 36};
-        TouchButton btnPlus  = {612, ry, 56, 36};
+        TouchButton btnMinus = {minusX, ry, minusW, rowH};
+        TouchButton valBox   = {valX,   ry, valW,   rowH};
+        TouchButton btnPlus  = {plusX,  ry, minusW, rowH};
 
         char vBuf[24];
         if (vals[i] < 0) std::snprintf(vBuf, sizeof(vBuf), (i == 4) ? "AUTO SPD" : "OFF (-1)");
@@ -826,8 +1114,11 @@ static void drawGpioModal() {
         drawButton(btnPlus, "+", rgb565(55, 71, 79));
     }
 
-    drawButton({220, 380, 160, 42}, "SAVE & APPLY", rgb565(46, 125, 50));
-    drawButton({420, 380, 160, 42}, "CLOSE", rgb565(183, 28, 28));
+    int botY = u.compactLabels ? (u.scrH - 32) : 380;
+    int botH = u.compactLabels ? 24 : 42;
+    int botW = u.compactLabels ? 110 : 160;
+    drawButton({u.scrW / 2 - botW - 10, botY, botW, botH}, "SAVE & APPLY", rgb565(46, 125, 50));
+    drawButton({u.scrW / 2 + 10,        botY, botW, botH}, "CLOSE",        rgb565(183, 28, 28));
 }
 
 static void redrawEntireScreen() {
@@ -873,51 +1164,84 @@ static void redrawEntireScreen() {
     }
 }
 
+// ============================================================================
+// MAIN TOUCH & EVENT DISPATCH LOOP
+// ============================================================================
+
 static bool wasTouching = false;
 
 static void esp32LoopTick() {
     pollBellowsGpioPins();
 
+    const auto& u = UI();
     uint16_t tx = 0, ty = 0;
     bool touching = g_tft->getTouch(&tx, &ty);
 
     if (touching && !wasTouching) {
         if (g_modalState == MODAL_GPIO_CFG) {
+            int padY   = u.compactLabels ? 24 : 44;
+            int startY = padY + (u.compactLabels ? 22 : 60);
+            int stepY  = u.compactLabels ? 30 : 52;
+            int rowH   = u.compactLabels ? 24 : 36;
+            int minusX = u.compactLabels ? 140 : 430;
+            int minusW = u.compactLabels ? 32  : 56;
+            int plusX  = u.compactLabels ? 276 : 612;
+
             int* pinPtrs[5] = {&g_pins.i2sBclk, &g_pins.i2sLrck, &g_pins.i2sDout, &g_pins.belPosPin, &g_pins.belDepPin};
             for (int i = 0; i < 5; ++i) {
-                int ry = 104 + i * 52;
+                int ry = startY + i * stepY;
                 int minPin = (i >= 3) ? -1 : 0;
-                if (hitBox({430, ry, 56, 36}, tx, ty)) {
+                if (hitBox({minusX, ry, minusW, rowH}, tx, ty)) {
                     *pinPtrs[i] = std::max(minPin, *pinPtrs[i] - 1);
-                } else if (hitBox({612, ry, 56, 36}, tx, ty)) {
+                } else if (hitBox({plusX, ry, minusW, rowH}, tx, ty)) {
                     *pinPtrs[i] = std::min(48, *pinPtrs[i] + 1);
                 }
             }
-            if (hitBox({220, 380, 160, 42}, tx, ty)) {
+
+            int botY = u.compactLabels ? (u.scrH - 32) : 380;
+            int botH = u.compactLabels ? 24 : 42;
+            int botW = u.compactLabels ? 110 : 160;
+            if (hitBox({u.scrW / 2 - botW - 10, botY, botW, botH}, tx, ty)) {
                 saveGpioConfig();
                 g_modalState = MODAL_NONE;
-            } else if (hitBox({420, 380, 160, 42}, tx, ty)) {
+            } else if (hitBox({u.scrW / 2 + 10, botY, botW, botH}, tx, ty)) {
                 g_modalState = MODAL_NONE;
             }
             redrawEntireScreen();
-        } else if (hitBox(BTN_BEL_POS, tx, ty)) {
+
+        } else if (hitBox(u.btnBelPos, tx, ty)) {
             engine.setBellowsPosManual(!engine.isBellowsPosManual());
             drawTabs();
-        } else if (hitBox(BTN_BEL_DEP, tx, ty)) {
+        } else if (hitBox(u.btnBelDep, tx, ty)) {
             engine.setBellowsDepManual(!engine.isBellowsDepManual());
             drawTabs();
-        } else if (hitBox(BTN_GPIO, tx, ty)) {
+        } else if (hitBox(u.btnGpio, tx, ty)) {
             g_modalState = MODAL_GPIO_CFG;
             redrawEntireScreen();
-        } else if (hitBox(BTN_AUDIO, tx, ty)) {
+        } else if (hitBox(u.btnAudio, tx, ty)) {
             g_audioOutMode = (g_audioOutMode + 1) % 3;
 #ifdef ESP32
             UsbAudioPartner::s_enableUsbAudio = (g_audioOutMode == 0);
 #endif
             redrawEntireScreen();
+
         } else if (g_modalState == MODAL_FILE_LOAD) {
+            int padX = u.compactLabels ? 6 : 40;
+            int padY = u.compactLabels ? 24 : 30;
+            int mw = u.scrW - padX * 2;
+            int cols = 3;
+            int cellW = (mw - 24) / cols;
+            int cellH = u.compactLabels ? 28 : 45;
+            int stepY = u.compactLabels ? 34 : 60;
+            int startY = padY + (u.compactLabels ? 26 : 70);
+
             for (size_t i = 0; i < g_fileList.size() && i < 12; ++i) {
-                TouchButton btn = {80 + static_cast<int>(i % 3) * 220, 100 + static_cast<int>(i / 3) * 60, 200, 45};
+                TouchButton btn = {
+                    padX + 8 + static_cast<int>(i % cols) * (cellW + 4),
+                    startY + static_cast<int>(i / cols) * stepY,
+                    cellW,
+                    cellH
+                };
                 if (hitBox(btn, tx, ty)) {
                     int nTala = 0, nSong = 0;
                     std::string fullPath = "/" + g_fileList[i];
@@ -930,29 +1254,52 @@ static void esp32LoopTick() {
             }
             g_modalState = MODAL_NONE;
             redrawEntireScreen();
+
         } else if (g_modalState == MODAL_SAVE_KBD) {
             bool handled = false;
             const char* rows[] = {"1234567890-", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM_"};
-            int yStart = 170;
+            int padX = u.compactLabels ? 4 : 40;
+            int padY = u.compactLabels ? 24 : 30;
+            int mw   = u.scrW - padX * 2;
+            int boxX = padX + (u.compactLabels ? 8 : 60);
+            int boxY = padY + (u.compactLabels ? 20 : 70);
+            int boxW = mw - (u.compactLabels ? 64 : 120);
+            int boxH = u.compactLabels ? 22 : 50;
+
+            int keyStepX = u.compactLabels ? 27 : 45;
+            int keyW     = u.compactLabels ? 25 : 40;
+            int keyH     = u.compactLabels ? 24 : 40;
+            int keyStepY = u.compactLabels ? 27 : 50;
+            int yStart   = padY + (u.compactLabels ? 48 : 140);
+
             for (int r = 0; r < 4; ++r) {
-                int len = strlen(rows[r]);
-                int xStart = 400 - (len * 45) / 2;
+                int len = static_cast<int>(std::strlen(rows[r]));
+                int xStart = u.scrW / 2 - (len * keyStepX) / 2;
                 for (int c = 0; c < len; ++c) {
-                    if (hitBox({xStart + c * 45, yStart + r * 50, 40, 40}, tx, ty)) {
+                    if (hitBox({xStart + c * keyStepX, yStart + r * keyStepY, keyW, keyH}, tx, ty)) {
                         if (g_kbdInput.length() < 24) g_kbdInput += rows[r][c];
-                        handled = true; break;
+                        handled = true;
+                        break;
                     }
                 }
                 if (handled) break;
             }
             if (!handled) {
-                if (hitBox({630, 170, 80, 40}, tx, ty)) {
+                TouchButton delBtn = u.compactLabels
+                                         ? TouchButton{boxX + boxW + 4, boxY, 44, boxH}
+                                         : TouchButton{630, 170, 80, 40};
+                int botY = u.compactLabels ? (u.scrH - 30) : 380;
+                int botH = u.compactLabels ? 24 : 45;
+                int botW = u.compactLabels ? 86 : 120;
+                int cx = u.scrW / 2;
+
+                if (hitBox(delBtn, tx, ty)) {
                     if (!g_kbdInput.empty()) g_kbdInput.pop_back();
-                } else if (hitBox({340, 380, 120, 45}, tx, ty)) {
+                } else if (hitBox({cx - (botW / 2), botY, botW, botH}, tx, ty)) {
                     if (g_kbdInput.length() < 24) g_kbdInput += " ";
-                } else if (hitBox({200, 380, 120, 45}, tx, ty)) {
+                } else if (hitBox({cx - botW - (botW / 2) - 8, botY, botW, botH}, tx, ty)) {
                     g_modalState = MODAL_NONE;
-                } else if (hitBox({480, 380, 120, 45}, tx, ty)) {
+                } else if (hitBox({cx + (botW / 2) + 8, botY, botW, botH}, tx, ty)) {
                     if (g_kbdInput.empty()) g_kbdInput = "Untitled";
                     std::string fname = "/" + g_kbdInput + ".mhb";
                     std::replace(fname.begin(), fname.end(), ' ', '_');
@@ -961,6 +1308,7 @@ static void esp32LoopTick() {
                 }
             }
             redrawEntireScreen();
+
         } else if (g_modalState != MODAL_NONE) {
             const char** list = nullptr;
             int count = 0;
@@ -968,14 +1316,20 @@ static void esp32LoopTick() {
             else if (g_modalState == MODAL_KARTAL) { list = VALID_KARTALS; count = NUM_VALID_KARTALS; }
             else if (g_modalState == MODAL_SWARA) { list = VALID_SWARAS; count = NUM_VALID_SWARAS; }
 
-            int cols = 6;
-            int cellW = 100, cellH = 45;
-            int startX = 400 - (cols * (cellW + 10)) / 2;
-            int startY = 80;
+            int padX   = u.compactLabels ? 4 : 40;
+            int padY   = u.compactLabels ? 24 : 30;
+            int mw     = u.scrW - padX * 2;
+            int cols   = 6;
+            int gapX   = u.compactLabels ? 3 : 10;
+            int gapY   = u.compactLabels ? 4 : 10;
+            int cellW  = (mw - (cols + 1) * gapX) / cols;
+            int cellH  = u.compactLabels ? 30 : 45;
+            int startX = u.scrW / 2 - (cols * (cellW + gapX)) / 2;
+            int startY = padY + (u.compactLabels ? 22 : 50);
             bool selectionMade = false;
 
             for (int i = 0; i < count; ++i) {
-                TouchButton btn = {startX + (i % cols) * (cellW + 10), startY + (i / cols) * (cellH + 10), cellW, cellH};
+                TouchButton btn = {startX + (i % cols) * (cellW + gapX), startY + (i / cols) * (cellH + gapY), cellW, cellH};
                 if (hitBox(btn, tx, ty)) {
                     if (g_currentView == VIEW_TALA_ED) {
                         auto& kt = const_cast<std::vector<TalaTheka>&>(BuiltInPresets::getTalaThekas())[engine.getSelectedTala()];
@@ -1002,7 +1356,7 @@ static void esp32LoopTick() {
             if (selectionMade) engine.rebuildActivePatterns();
             redrawEntireScreen();
 
-        } else if (hitBox(BTN_LANG, tx, ty)) {
+        } else if (hitBox(u.btnLang, tx, ty)) {
             g_langIdx = (g_langIdx + 1) % static_cast<int>(I18n::getLanguages().size());
             redrawEntireScreen();
         } else if (g_currentView == VIEW_LIVE) {
@@ -1016,64 +1370,67 @@ static void esp32LoopTick() {
                     drawSwaraPopup();
                 }
             } else {
-                if (hitBox(TAB_TALA, tx, ty)) { g_currentView = VIEW_TALA_ED; redrawEntireScreen(); }
-                else if (hitBox(TAB_HARM, tx, ty)) { g_currentView = VIEW_HARM_ED; redrawEntireScreen(); }
-                else if (hitBox(BTN_START, tx, ty)) {
+                if (hitBox(u.tabTala, tx, ty)) { g_currentView = VIEW_TALA_ED; redrawEntireScreen(); }
+                else if (hitBox(u.tabHarm, tx, ty)) { g_currentView = VIEW_HARM_ED; redrawEntireScreen(); }
+                else if (hitBox(u.btnStart, tx, ty)) {
                     if (!engine.isPlaying()) engine.startWithCountdown(g_useCountdown);
                     else engine.stopPlayback();
                     drawTopTransportRow();
-                } else if (hitBox(BTN_PAUSE, tx, ty)) {
+                } else if (hitBox(u.btnPause, tx, ty)) {
                     engine.togglePause();
                     drawTopTransportRow();
-                } else if (hitBox(BTN_COUNT, tx, ty)) {
+                } else if (hitBox(u.btnCount, tx, ty)) {
                     g_useCountdown = !g_useCountdown;
                     drawTopTransportRow();
-                } else if (hitBox(BTN_TALA_PREV, tx, ty)) {
+                } else if (hitBox(u.btnTalaPrev, tx, ty)) {
                     engine.selectTala(engine.getSelectedTala() - 1);
                     drawTopTransportRow();
+                    drawTalometerLEDs();
                     drawFooter();
-                } else if (hitBox(BTN_TALA_NEXT, tx, ty)) {
+                } else if (hitBox(u.btnTalaNext, tx, ty)) {
                     engine.selectTala(engine.getSelectedTala() + 1);
                     drawTopTransportRow();
+                    drawTalometerLEDs();
                     drawFooter();
-                } else if (hitBox(BTN_SONG_PREV, tx, ty)) {
+                } else if (hitBox(u.btnSongPrev, tx, ty)) {
                     engine.selectHarmoniumSong(engine.getSelectedSong() - 1);
                     drawTopTransportRow();
                     drawUtilityRow();
                     drawTrackButtons();
                     drawFooter();
-                } else if (hitBox(BTN_SONG_NEXT, tx, ty)) {
+                } else if (hitBox(u.btnSongNext, tx, ty)) {
                     engine.selectHarmoniumSong(engine.getSelectedSong() + 1);
                     drawTopTransportRow();
                     drawUtilityRow();
                     drawTrackButtons();
                     drawFooter();
-                } else if (hitBox(BTN_BPM_DOWN, tx, ty)) {
+                } else if (hitBox(u.btnBpmDown, tx, ty)) {
                     engine.setBpm(engine.getBpm() - 5);
                     drawTopTransportRow();
-                } else if (hitBox(BTN_BPM_UP, tx, ty)) {
+                } else if (hitBox(u.btnBpmUp, tx, ty)) {
                     engine.setBpm(engine.getBpm() + 5);
                     drawTopTransportRow();
-                } else if (hitBox(BTN_SA_CYCLE, tx, ty)) {
+                } else if (hitBox(u.btnSaCycle, tx, ty)) {
                     engine.setSaSemitone(engine.getSaSemitone() + 1);
                     drawDroneAndTunerRow();
                     drawPianoKeyboard(g_touchHeldMidi);
-                } else if (hitBox(BTN_DRONE_EN, tx, ty)) {
+                } else if (hitBox(u.btnDroneEn, tx, ty)) {
                     engine.setDroneEnabled(!engine.isDroneEnabled());
                     drawDroneAndTunerRow();
-                } else if (hitBox(BTN_DRONE_PRE, tx, ty)) {
+                } else if (hitBox(u.btnDronePre, tx, ty)) {
                     engine.setDronePreset(engine.getDronePreset() + 1);
                     drawDroneAndTunerRow();
-                } else if (hitBox(BTN_DRONE_SUR, tx, ty)) {
+                } else if (hitBox(u.btnDroneSur, tx, ty)) {
                     engine.setDroneSwaraMode(engine.getDroneSwaraMode() + 1);
                     drawDroneAndTunerRow();
-                } else if (hitBox(BTN_RND_TALA, tx, ty)) {
+                } else if (hitBox(u.btnRndTala, tx, ty)) {
                     engine.randomizeTala();
                     engine.rebuildActivePatterns();
                     if (!engine.isPlaying()) engine.startWithCountdown(g_useCountdown);
                     drawTopTransportRow();
+                    drawTalometerLEDs();
                     drawFooter();
-                } else if (hitBox(BTN_RND_SONG, tx, ty)) {
+                } else if (hitBox(u.btnRndSong, tx, ty)) {
                     engine.randomizeRaga();
                     engine.rebuildActivePatterns();
                     engine.setHarmoniumPresetMode(true);
@@ -1081,26 +1438,26 @@ static void esp32LoopTick() {
                     drawHarmoniumDspRow();
                     drawUtilityRow();
                     drawTrackButtons();
-                } else if (hitBox(BTN_MIDI_MODE, tx, ty)) {
+                } else if (hitBox(u.btnMidiMode, tx, ty)) {
                     engine.setMidiInMode(engine.getMidiInMode() + 1);
                     drawUtilityRow();
-                } else if (engine.hasSingingData() && hitBox(BTN_SING_MODE, tx, ty)) {
+                } else if (engine.hasSingingData() && hitBox(u.btnSingMode, tx, ty)) {
                     engine.toggleSingingEnabled();
                     drawUtilityRow();
                     drawTrackButtons();
-                } else if (hitBox(BTN_HARM_MODE, tx, ty)) {
+                } else if (hitBox(u.btnHarmMode, tx, ty)) {
                     engine.setHarmoniumPresetMode(!engine.isHarmoniumPresetMode());
                     drawHarmoniumDspRow();
-                } else if (hitBox(BTN_OCT_DOWN, tx, ty)) {
+                } else if (hitBox(u.btnOctDown, tx, ty)) {
                     engine.setOctaveShift(engine.getOctaveShift() - 1);
                     drawHarmoniumDspRow();
-                } else if (hitBox(BTN_OCT_UP, tx, ty)) {
+                } else if (hitBox(u.btnOctUp, tx, ty)) {
                     engine.setOctaveShift(engine.getOctaveShift() + 1);
                     drawHarmoniumDspRow();
-                } else if (hitBox(BTN_TF_EN, tx, ty)) {
+                } else if (hitBox(u.btnTfEn, tx, ty)) {
                     engine.setTfEnabled(!engine.isTfEnabled());
                     drawHarmoniumDspRow();
-                } else if (hitBox(BTN_EDIT_MODE, tx, ty)) {
+                } else if (hitBox(u.btnEditMode, tx, ty)) {
                     g_currentView = VIEW_TALA_ED;
                     redrawEntireScreen();
                 } else {
@@ -1118,45 +1475,45 @@ static void esp32LoopTick() {
                 }
             }
         } else if (g_currentView == VIEW_TALA_ED || g_currentView == VIEW_HARM_ED) {
-            if (hitBox(TAB_LIVE, tx, ty)) { g_currentView = VIEW_LIVE; redrawEntireScreen(); }
-            else if (hitBox(TAB_TALA, tx, ty)) { g_currentView = VIEW_TALA_ED; redrawEntireScreen(); }
-            else if (hitBox(TAB_HARM, tx, ty)) { g_currentView = VIEW_HARM_ED; redrawEntireScreen(); }
+            if (hitBox(u.tabLive, tx, ty)) { g_currentView = VIEW_LIVE; redrawEntireScreen(); }
+            else if (hitBox(u.tabTala, tx, ty)) { g_currentView = VIEW_TALA_ED; redrawEntireScreen(); }
+            else if (hitBox(u.tabHarm, tx, ty)) { g_currentView = VIEW_HARM_ED; redrawEntireScreen(); }
 
-            else if (hitBox(BTN_ED_PREV, tx, ty)) {
+            else if (hitBox(u.btnEdPrev, tx, ty)) {
                 if (g_currentView == VIEW_TALA_ED) engine.selectTala(engine.getSelectedTala() - 1);
                 else engine.selectHarmoniumSong(engine.getSelectedSong() - 1);
                 redrawEntireScreen();
-            } else if (hitBox(BTN_ED_NEXT, tx, ty)) {
+            } else if (hitBox(u.btnEdNext, tx, ty)) {
                 if (g_currentView == VIEW_TALA_ED) engine.selectTala(engine.getSelectedTala() + 1);
                 else engine.selectHarmoniumSong(engine.getSelectedSong() + 1);
                 redrawEntireScreen();
-            } else if (hitBox(BTN_ED_RAND, tx, ty)) {
+            } else if (hitBox(u.btnEdRand, tx, ty)) {
                 if (g_currentView == VIEW_TALA_ED) engine.randomizeTala();
                 else engine.randomizeRaga();
                 engine.rebuildActivePatterns();
                 redrawEntireScreen();
-            } else if (hitBox(BTN_ED_PLAY, tx, ty)) {
+            } else if (hitBox(u.btnEdPlay, tx, ty)) {
                 if (engine.isPlaying()) engine.stopPlayback();
                 else {
                     if (g_currentView == VIEW_HARM_ED) engine.setHarmoniumPresetMode(true);
                     engine.startWithCountdown(false);
                 }
                 redrawEntireScreen();
-            } else if (hitBox(BTN_ED_SAVE, tx, ty)) {
+            } else if (hitBox(u.btnEdSave, tx, ty)) {
                 if (g_currentView == VIEW_TALA_ED) g_kbdInput = "Tala_" + std::string(BuiltInPresets::getTalaThekas()[engine.getSelectedTala()].name);
                 else g_kbdInput = "Raga_" + std::string(BuiltInPresets::getHarmoniumSongs()[engine.getSelectedSong()].title);
                 std::replace(g_kbdInput.begin(), g_kbdInput.end(), ' ', '_');
                 if (g_kbdInput.length() > 20) g_kbdInput = g_kbdInput.substr(0, 20);
                 g_modalState = MODAL_SAVE_KBD;
                 redrawEntireScreen();
-            } else if (hitBox(BTN_ED_LOAD, tx, ty)) {
+            } else if (hitBox(u.btnEdLoad, tx, ty)) {
                 g_fileList = listBankFiles();
                 g_modalState = MODAL_FILE_LOAD;
                 redrawEntireScreen();
-            } else if (hitBox(BTN_ED_DIVS, tx, ty)) {
+            } else if (hitBox(u.btnEdDivs, tx, ty)) {
                 auto cycleDivs = [](const char* cur) {
                     for (int i = 0; i < 6; i++) {
-                        if (strcmp(cur, VALID_DIVISIONS[i]) == 0) return VALID_DIVISIONS[(i + 1) % 6];
+                        if (std::strcmp(cur, VALID_DIVISIONS[i]) == 0) return VALID_DIVISIONS[(i + 1) % 6];
                     }
                     return VALID_DIVISIONS[0];
                 };
@@ -1173,13 +1530,24 @@ static void esp32LoopTick() {
                 if (g_currentView == VIEW_TALA_ED) {
                     auto& kt = const_cast<std::vector<TalaTheka>&>(BuiltInPresets::getTalaThekas())[engine.getSelectedTala()];
                     auto vibhags = parseVibhags(kt.divisions);
+                    int padX  = u.compactLabels ? 4 : 16;
+                    int stepX = (u.scrW - padX * 2) / 8;
+                    int cellW = stepX - 2;
+                    int hdrH  = u.compactLabels ? 16 : 24;
+                    int bolH  = u.compactLabels ? 24 : 36;
+                    int karH  = u.compactLabels ? 24 : 36;
+                    int rowH  = hdrH + bolH + karH + (u.compactLabels ? 6 : 24);
+
                     int globalMatra = 0;
                     for (size_t v = 0; v < vibhags.size(); ++v) {
                         for (int m = 0; m < vibhags[v]; ++m) {
                             int r = globalMatra / 8;
                             int c = globalMatra % 8;
-                            TouchButton bolBtn = {16 + c * 96, 130 + r * 120 + 28, 90, 36};
-                            TouchButton karBtn = {16 + c * 96, 130 + r * 120 + 68, 90, 36};
+                            int bx = padX + c * stepX;
+                            int by = u.edGridY + r * rowH;
+
+                            TouchButton bolBtn = {bx, by + hdrH + 1, cellW, bolH};
+                            TouchButton karBtn = {bx, by + hdrH + bolH + 2, cellW, karH};
 
                             if (hitBox(bolBtn, tx, ty)) {
                                 g_editingCellIdx = globalMatra;
@@ -1203,12 +1571,19 @@ static void esp32LoopTick() {
                         auto vibhags = parseVibhags(hs.divisions);
                         int totalMatras = 0;
                         for (int v : vibhags) totalMatras += v;
-                        int cellW = (totalMatras > 0) ? (768 / totalMatras) : 48;
-                        if (cellW > 64) cellW = 64;
+                        if (totalMatras <= 0) totalMatras = 8;
+
+                        int padX  = u.compactLabels ? 4 : 16;
+                        int maxCW = u.compactLabels ? 36 : 64;
+                        int cellW = std::min(maxCW, (u.scrW - padX * 2) / totalMatras);
+                        int hdrH  = u.compactLabels ? 18 : 24;
+                        int rowH  = u.compactLabels ? 28 : 42;
+                        int btnH  = rowH - (u.compactLabels ? 3 : 4);
+                        int rowsY = u.edGridY + hdrH + (u.compactLabels ? 3 : 6);
 
                         for (int row = 0; row < hs.forms[0].numRows; ++row) {
                             for (int col = 0; col < totalMatras; ++col) {
-                                TouchButton sBtn = {16 + col * cellW, 160 + row * 42, cellW - 2, 38};
+                                TouchButton sBtn = {padX + col * cellW, rowsY + row * rowH, cellW - 1, btnH};
                                 if (hitBox(sBtn, tx, ty)) {
                                     g_editingCellIdx = row * totalMatras + col;
                                     g_modalState = MODAL_SWARA;
@@ -1338,14 +1713,19 @@ void setup() {
 
     initWaveshare7InchBacklightAndTouch();
     g_display.init();
+#if SCREEN_PROFILE == 0
     g_display.setRotation(0);
+    g_display.setFont(&fonts::Font2);
+#else
+    g_display.setFont(&fonts::Font0);
+#endif
     g_display.setAttribute(UTF8_SWITCH, true);
     g_display.fillScreen(rgb565(22, 25, 30));
-    g_display.setFont(&fonts::Font2);
 
     g_display.setTextDatum(MC_DATUM);
     g_display.setTextColor(rgb565(0, 229, 255));
-    g_display.drawString("Synthesizing Xpressive Percussion Voices into PSRAM...", 400, 240);
+    g_display.drawString("Synthesizing Percussion into PSRAM...",
+                         g_display.screenWidth() / 2, g_display.screenHeight() / 2);
 
     engine.init(AUDIO_SRATE);
     initI2S();
@@ -1444,9 +1824,15 @@ int main(int argc, char *argv[]) {
         audioBridge.findChild<QAudioSink*>()->setBufferSize(2048);
     }
 
+    display.onProfileChanged = [](int) {
+        g_modalState = MODAL_NONE;
+        redrawEntireScreen();
+    };
+
     display.onPcKeyMidi = [](int midi, bool on) {
         engine.handleIncomingMidi(midi, 105, on);
-        if (g_currentView == VIEW_LIVE && g_modalState == MODAL_NONE && (engine.getMidiInMode() == 0 || engine.getMidiInMode() == 2 || (engine.getMidiInMode() == 1 && midi >= 52))) {
+        if (g_currentView == VIEW_LIVE && g_modalState == MODAL_NONE &&
+            (engine.getMidiInMode() == 0 || engine.getMidiInMode() == 2 || (engine.getMidiInMode() == 1 && midi >= 52))) {
             if (on) {
                 drawPianoKeyboard(midi);
                 drawSwaraPopup();
@@ -1460,7 +1846,8 @@ int main(int argc, char *argv[]) {
         engine.handleIncomingMidi(note, vel, on);
 
         QMetaObject::invokeMethod(&display, [note, vel, on]() {
-            if (g_currentView == VIEW_LIVE && g_modalState == MODAL_NONE && (engine.getMidiInMode() == 0 || engine.getMidiInMode() == 2 || (engine.getMidiInMode() == 1 && note >= 52))) {
+            if (g_currentView == VIEW_LIVE && g_modalState == MODAL_NONE &&
+                (engine.getMidiInMode() == 0 || engine.getMidiInMode() == 2 || (engine.getMidiInMode() == 1 && note >= 52))) {
                 if (on) {
                     drawPianoKeyboard(note);
                     drawSwaraPopup();
