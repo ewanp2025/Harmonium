@@ -15,7 +15,7 @@ The goal of this project is to build a dedicated, standalone electronic instrume
 * **Experimental Singing Voice:** An early-stage phonetic voice synthesiser designed to articulate lyrics and syllables alongside the melody (currently a work-in-progress).
 
 ## Sound Synthesis Architecture
-The sound generation in this project uses mathematical expression parsing rather than static audio samples. 
+The sound generation in this project uses mathematical expression parsing rather than static audio samples (although the parsed drum expressions are computed and saved as samples in memory on each boot). 
 
 Credit goes to the creators of the LMMS Xpressive synthesizer plugin for establishing this expression language. Because the instruments were originally modeled and synthesized in LMMS Xpressive, this firmware includes a lightweight, standalone C++ parser and abstract syntax tree (AST) evaluator that runs the formulas directly on the ESP32-S3. This allows reed harmonics, bellows modulation, envelope decay, and percussion transients to be updated and refined purely in code without bloating flash storage with audio files.
 
@@ -33,7 +33,8 @@ Because the Waveshare 7-inch development board used for testing and development 
   * BCLK (Bit Clock): GPIO 6
   * LRCK / WS (Word Select): GPIO 16
   * DOUT (Serial Data Out): GPIO 15
-  
+  * Will most likely map this to ESP32-S3-DevKitC-1 N16R8 to DAC or have menu to map.
+     
   Connect an external I2S DAC breakout (such as a PCM5102A for a 3.5 mm jack, or a MAX98357A for a direct speaker) to these pins for clean, zero-latency physical audio output. 
   > **\*\* Please note** that the above (I2s) has not been tested, as I have not wished to break connections on my test board which lacks an array of GPIO pins.
 
@@ -45,17 +46,18 @@ Because the Waveshare 7-inch development board used for testing and development 
   > **Important Hardware Note:** This only works with some USB headphones and dongles without a USB OGT Power Splitter. First select the OUT: button to USB: NO DEV, then plug in the device afterwards and the button will change to USB: 48K OK and then play through the device
 
 ## Current Limitations
-* **Cabinet Resonance Transfer Function:** The cabinet filter (TransferFunctionFX) simulates the acoustic wooden body of the harmonium using frequency-domain processing. It is currently heavy on processing and can cause audio underruns when turned on; it needs to be worked on.
+* **Cabinet Resonance Transfer Function:** The cabinet filter (TransferFunctionFX) simulates the acoustic wooden body of the harmonium using frequency-domain processing. This has been overridden for the harmonium but the functionality is still incorporated incase the effect has to be modified. However the transfer function slows processing down.
 * **Simultaneous USB Audio Out + USB MIDI In:** The ESP32-S3 has a single USB OTG controller. While hot-plugging between a MIDI keyboard and a USB audio dongle is supported, running both simultaneously through a passive hub is limited by the current driver architecture.
-* **When using USB Audio out, on play, at certain parts of the song, the device, particularly audio lags:** It also crashes when drone enabled. I will have to look at better routines.
-* **WIFI streaming is too slow and delayed:** As I now have USB Audio working, I will not be working on imrpving WIFI streaming. This could probably be hidden going forward.
+* **Bluetooth Crashes:** As I now have USB Audio working, this could probably be hidden going forward.
+* **WIFI streaming is too slow and delayed:** As I now have USB Audio working, this could probably be hidden going forward.
 * * **Bellows Can't Be Manually Controlled:** Need to add Auto / Manual Selector for Bellows Amount and Speed
 * **Board Selection:** Once the firmware is worked on further, the goal is to target a less expensive / cost-effective ESP32-S3 development board such as the following:
   * ESP32-S3-DevKitC-1 N16R8
   * PCM5102A I2S DAC Breakout
   * 2.8" 320×240 ILI9341 or ST7789 SPI Touch Screen
+  * With the code compiling two versions, one for each screen size
 * **Singing Voice Synthesis:** Needs to be worked on and is hidden from the main menu for now.
-
+* **Processing needs to be optimised for non FPU processors:** To convert renderFastHarmoniumSample() and TransferFunctionFX to pure int16_t/int32_t fixed-point math
 ## To build
 
 ```bash
