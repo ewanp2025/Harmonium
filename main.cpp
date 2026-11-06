@@ -1232,7 +1232,7 @@ static void masterAudioTask(void*) {
         }
 
         // Always yield so loop() on Core 1 can process touch events and release m_mutex
-        vTaskDelay(1);
+        taskYIELD();
     }
 
 }
