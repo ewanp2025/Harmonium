@@ -16,17 +16,36 @@
 
 namespace XpressiveParser {
 
+// Replace struct SineLUT in xpressive_parser.h (lines 17-34) with:
 struct SineLUT {
     float table[2048];
+    float reedBase[2048];  // sin(x) - 0.5*sin(2x) + (1/3)*sin(3x)
+    float reedUpper[2048]; // (1/3)*sin(3x) - 0.25*sin(4x) + 0.20*sin(5x)
+
     SineLUT() {
         for (int i = 0; i < 2048; ++i) {
-            table[i] = std::sin(2.0f * M_PI_F * (static_cast<float>(i) / 2048.0f));
+            float th = 2.0f * M_PI_F * (static_cast<float>(i) / 2048.0f);
+            float s1 = std::sin(th);
+            float s2 = std::sin(2.0f * th);
+            float s3 = std::sin(3.0f * th);
+            float s4 = std::sin(4.0f * th);
+            float s5 = std::sin(5.0f * th);
+            table[i]     = s1;
+            reedBase[i]  = s1 - 0.5f * s2 + (1.0f / 3.0f) * s3;
+            reedUpper[i] = (1.0f / 3.0f) * s3 - 0.25f * s4 + 0.20f * s5;
         }
     }
     inline float sinUnit(float x) const {
-        float p = x - std::floor(x);
-        int idx = static_cast<int>(p * 2048.0f) & 2047;
+        int idx = static_cast<int>(x * 2048.0f) & 2047; // Bitmask handles wrapping directly!
         return table[idx];
+    }
+    inline float reedBaseUnit(float x) const {
+        int idx = static_cast<int>(x * 2048.0f) & 2047;
+        return reedBase[idx];
+    }
+    inline float reedUpperUnit(float x) const {
+        int idx = static_cast<int>(x * 2048.0f) & 2047;
+        return reedUpper[idx];
     }
     inline float sinRad(float rad) const {
         return sinUnit(rad * (1.0f / (2.0f * M_PI_F)));
