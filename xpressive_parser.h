@@ -7,7 +7,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
-#include <memory>
+#include <cstdint>
 #include <algorithm>
 
 #ifndef M_PI_F
@@ -16,11 +16,11 @@
 
 namespace XpressiveParser {
 
-
 struct SineLUT {
-    float table[2048];
-    float reedBase[2048];  // sin(x) - 0.5*sin(2x) + (1/3)*sin(3x)
-    float reedUpper[2048]; // (1/3)*sin(3x) - 0.25*sin(4x) + 0.20*sin(5x)
+    float   table[2048];
+    int16_t sinQ14[2048];       // Q14 (16384 = 1.0): sin(x)
+    int16_t reedBaseQ14[2048];  // Q14: sin(x) - 0.5*sin(2x) + (1/3)*sin(3x)
+    int16_t reedUpperQ14[2048]; // Q14: (1/3)*sin(3x) - 0.25*sin(4x) + 0.20*sin(5x)
 
     SineLUT() {
         for (int i = 0; i < 2048; ++i) {
@@ -30,22 +30,32 @@ struct SineLUT {
             float s3 = std::sin(3.0f * th);
             float s4 = std::sin(4.0f * th);
             float s5 = std::sin(5.0f * th);
-            table[i]     = s1;
-            reedBase[i]  = s1 - 0.5f * s2 + (1.0f / 3.0f) * s3;
-            reedUpper[i] = (1.0f / 3.0f) * s3 - 0.25f * s4 + 0.20f * s5;
+
+            float rBase  = s1 - 0.5f * s2 + (1.0f / 3.0f) * s3;
+            float rUpper = (1.0f / 3.0f) * s3 - 0.25f * s4 + 0.20f * s5;
+
+            table[i]        = s1;
+            sinQ14[i]       = static_cast<int16_t>(std::clamp(s1 * 16384.0f, -32767.0f, 32767.0f));
+            reedBaseQ14[i]  = static_cast<int16_t>(std::clamp(rBase * 16384.0f, -32767.0f, 32767.0f));
+            reedUpperQ14[i] = static_cast<int16_t>(std::clamp(rUpper * 16384.0f, -32767.0f, 32767.0f));
         }
     }
+
+    // Fast branchless Q32 phase lookups (top 11 bits index 0..2047 directly)
+    inline int32_t sinUnitQ14(uint32_t phaseQ32) const {
+        return sinQ14[phaseQ32 >> 21];
+    }
+    inline int32_t reedBaseUnitQ14(uint32_t phaseQ32) const {
+        return reedBaseQ14[phaseQ32 >> 21];
+    }
+    inline int32_t reedUpperUnitQ14(uint32_t phaseQ32) const {
+        return reedUpperQ14[phaseQ32 >> 21];
+    }
+
+    // Float lookups for startup drum baking & singing synthesis
     inline float sinUnit(float x) const {
-        int idx = static_cast<int>(x * 2048.0f) & 2047; // Bitmask handles wrapping directly
+        int idx = static_cast<int>(x * 2048.0f) & 2047;
         return table[idx];
-    }
-    inline float reedBaseUnit(float x) const {
-        int idx = static_cast<int>(x * 2048.0f) & 2047;
-        return reedBase[idx];
-    }
-    inline float reedUpperUnit(float x) const {
-        int idx = static_cast<int>(x * 2048.0f) & 2047;
-        return reedUpper[idx];
     }
     inline float sinRad(float rad) const {
         return sinUnit(rad * (1.0f / (2.0f * M_PI_F)));
