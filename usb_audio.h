@@ -196,7 +196,7 @@ public:
 
    
         m_ringRead = 0;
-        m_ringWrite = 512;
+        m_ringWrite = 256;
         if (m_ringL) std::memset(m_ringL, 0, RING_SIZE * sizeof(int16_t));
         if (m_ringR) std::memset(m_ringR, 0, RING_SIZE * sizeof(int16_t));
         m_pktFrameAccum = 0;
