@@ -31,12 +31,25 @@ inline const T& my_clamp(const T& v, const T& lo, const T& hi) {
     return (v < lo) ? lo : (hi < v) ? hi : v;
 }
 
+inline float fastExpNeg(float x) {
+    if (x <= 0.0f) return 1.0f;
+    if (x >= 16.0f) return 0.0f;
+    float t = 1.0f + x * (1.0f / 8.0f);
+    t *= t; t *= t; t *= t;
+    return 1.0f / t;
+}
+
+inline float fastTanh(float x) {
+    if (x > 3.0f) return 1.0f;
+    if (x < -3.0f) return -1.0f;
+    float x2 = x * x;
+    return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+}
+
 class SynthEngine {
 public:
     static constexpr int NUM_TRACKS      = 24;
-    static constexpr int NUM_BAKED_DRUMS = 20;
-    static constexpr int TRACK_SHANKHA1  = 20;
-    static constexpr int TRACK_SHANKHA2  = 21;
+    static constexpr int NUM_BAKED_DRUMS = 22; // 0..19 Percussion, 20 Shankha 1, 21 Shankha 2
     static constexpr int TRACK_HARMONIUM = 22;
     static constexpr int TRACK_SINGING   = 23;
     static constexpr int VOCAL_CHAMBER_LEN = 4096;
@@ -46,9 +59,12 @@ public:
     void init(float sampleRate = 22050.0f) {
         m_srate = std::max(8000.0f, sampleRate);
 
+        for (int m = 0; m < 128; ++m) {
+            m_midiFreqLut[m] = m_a4Hz.load() * std::pow(2.0f, (m - 69) * (1.0f / 12.0f));
+        }
+
         m_liveHarmoniumTf.setSampleRate(m_srate);
         m_liveHarmoniumTf.enabled = false;
-
 
         initPrecompiledFormantLut();
         initVocalChamber();
@@ -61,9 +77,6 @@ public:
         m_tanpuraO2    = XpressiveParser::parse(BuiltInPresets::tanpuraDroneO2());
 
         const auto& trkSpecs = BuiltInPresets::getTracks();
-        m_shankhaAst1 = XpressiveParser::parse(trkSpecs[TRACK_SHANKHA1].o1Str);
-        m_shankhaAst2 = XpressiveParser::parse(trkSpecs[TRACK_SHANKHA2].o1Str);
-
         for (int i = 0; i < NUM_TRACKS && i < static_cast<int>(trkSpecs.size()); ++i) {
             m_trackMuted[i] = trkSpecs[i].muted;
         }
@@ -276,6 +289,7 @@ public:
 
     void rebakeDroneLoopInPsram() {
         if (!m_droneLoopBuf) return;
+        const auto& lut = XpressiveParser::lut();
         float bpm = static_cast<float>(m_bpm.load());
         int cycleSamples = std::min(m_maxDroneLoopSamples, static_cast<int>((240.0f / bpm) * m_srate));
         if (cycleSamples < 4096) cycleSamples = 4096;
@@ -283,47 +297,63 @@ public:
 
         int saOffset = m_saSemitone.load();
         int swaraMode = m_droneSwaraMode.load();
-        int midOffset = -5;
-        if (swaraMode == 1) midOffset = -7;
-        else if (swaraMode == 2) midOffset = -1;
-        else if (swaraMode == 3) midOffset = 0;
+        int midOffset = (swaraMode == 1) ? -7 : (swaraMode == 2) ? -1 : (swaraMode == 3) ? 0 : -5;
 
-        int droneMidi[3] = { 60 + saOffset, 60 + saOffset + midOffset, 48 + saOffset };
-        float droneVols[3] = { 0.80f, 0.75f, 0.85f };
+        const float freqs[3] = {
+            midiToFreq(60 + saOffset),
+            midiToFreq(60 + saOffset + midOffset),
+            midiToFreq(48 + saOffset)
+        };
+        const float droneVols[3] = { 0.80f, 0.75f, 0.85f };
         int dPreset = m_dronePreset.load();
-        bool useShruti = (dPreset == 0 || dPreset == 2);
-        bool useTanpura = (dPreset == 1 || dPreset == 2);
+        const bool useShruti  = (dPreset == 0 || dPreset == 2);
+        const bool useTanpura = (dPreset == 1 || dPreset == 2);
 
-        float shrutiInt1[3][12] = {{0}}, shrutiInt2[3][12] = {{0}};
-        float tanpuraInt1[3][12] = {{0}}, tanpuraInt2[3][12] = {{0}};
         const float dt = 1.0f / m_srate;
+        const float lfoRate = bpm * (1.0f / 60.0f);
+        const float tanpuraRate = bpm * (1.0f / 120.0f);
+        const float tanpuraModRate = bpm * (1.0f / 240.0f);
+
+        float pBase[3] = {0.0f, 0.0f, 0.0f};
+        float pDetMinus[3] = {0.0f, 0.0f, 0.0f};
+        float pDetPlus[3]  = {0.0f, 0.0f, 0.0f};
 
         for (int s = 0; s < cycleSamples + fadeLen; ++s) {
             float t = 1.0f + s * dt;
             float sampleSum = 0.0f;
+            float shrutiLfo = 0.92f + 0.08f * lut.sinUnit(t * lfoRate);
+            float pluckPhase1 = t * tanpuraRate;
+            pluckPhase1 -= std::floor(pluckPhase1);
+            float pluckPhase2 = pluckPhase1 + 0.5f;
+            if (pluckPhase2 >= 1.0f) pluckPhase2 -= 1.0f;
+            float pluckEnv1 = fastExpNeg(pluckPhase1 * 2.2f);
+            float pluckEnv2 = fastExpNeg(pluckPhase2 * 2.2f);
+            float fmMod1 = 0.6f + 0.35f * lut.sinUnit(t * tanpuraModRate);
+            float fmMod2 = 0.6f + 0.35f * lut.cosRad(t * tanpuraModRate);
 
             for (int dn = 0; dn < 3; ++dn) {
-                XpressiveParser::Env env;
-                env.t = t;
-                env.tempo = bpm;
-                env.srate = m_srate;
-                env.f = midiToFreq(droneMidi[dn]);
+                float f = freqs[dn];
+                pBase[dn]     += f * dt;
+                pDetMinus[dn] += (f * 0.997116f) * dt;
+                pDetPlus[dn]  += (f * 1.002892f) * dt;
 
                 float noteOut = 0.0f;
-                if (useShruti && m_shrutiO1 && m_shrutiO2) {
-                    env.intState = shrutiInt1[dn];
-                    env.numIntegrators = 12;
-                    float s1 = m_shrutiO1->eval(env);
-                    env.intState = shrutiInt2[dn];
-                    float s2 = m_shrutiO2->eval(env);
-                    noteOut += 0.5f * (s1 + s2) * 0.938f;
+                if (useShruti) {
+                    float saw1 = 2.0f * (pDetMinus[dn] - std::floor(pDetMinus[dn])) - 1.0f;
+                    float saw2 = 2.0f * (pDetPlus[dn]  - std::floor(pDetPlus[dn]))  - 1.0f;
+                    float sq1  = ((pDetPlus[dn]  - std::floor(pDetPlus[dn]))  < 0.5f) ? 1.0f : -1.0f;
+                    float sq2  = ((pDetMinus[dn] - std::floor(pDetMinus[dn])) < 0.5f) ? 1.0f : -1.0f;
+                    float oct  = lut.sinUnit(2.0f * pBase[dn]);
+                    float shruti = 0.3f * (0.275f * (saw1 + saw2) + 0.175f * (sq1 + sq2) + 0.2f * oct) * shrutiLfo;
+                    noteOut += shruti * 0.938f;
                 }
-                if (useTanpura && m_tanpuraO1 && m_tanpuraO2) {
-                    env.intState = tanpuraInt1[dn];
-                    env.numIntegrators = 12;
-                    float t1 = m_tanpuraO1->eval(env);
-                    env.intState = tanpuraInt2[dn];
-                    float t2 = m_tanpuraO2->eval(env);
+                if (useTanpura) {
+                    float s2 = lut.sinUnit(2.0f * pBase[dn]);
+                    float s3 = lut.sinUnit(3.0f * pBase[dn]);
+                    float sawDet = 2.0f * (pDetMinus[dn] - std::floor(pDetMinus[dn])) - 1.0f;
+                    float sawBase = 2.0f * (pBase[dn] - std::floor(pBase[dn])) - 1.0f;
+                    float t1 = 0.35f * (lut.sinUnit(pBase[dn] + fmMod1 * s2 + 0.25f * s3) + 0.4f * sawDet * pluckEnv1);
+                    float t2 = 0.35f * (lut.sinUnit(pDetPlus[dn] + fmMod2 * s2 + 0.25f * s3) + 0.4f * sawBase * pluckEnv2);
                     noteOut += 0.5f * (t1 + t2) * 0.35f;
                 }
                 sampleSum += noteOut * droneVols[dn];
@@ -331,13 +361,10 @@ public:
 
             float outVal = my_clamp(sampleSum * 0.22f, -1.0f, 1.0f);
             m_droneLoopBuf[s] = static_cast<int16_t>(outVal * 32767.0f);
-            #ifdef ESP32
-                if ((s & 4095) == 4095) vTaskDelay(1);
-            #endif
         }
 
         for (int i = 0; i < fadeLen; ++i) {
-            float alpha = static_cast<float>(i) / static_cast<float>(fadeLen);
+            float alpha = static_cast<float>(i) * (1.0f / static_cast<float>(fadeLen));
             float head = static_cast<float>(m_droneLoopBuf[i]);
             float tail = static_cast<float>(m_droneLoopBuf[cycleSamples + i]);
             m_droneLoopBuf[i] = static_cast<int16_t>(alpha * head + (1.0f - alpha) * tail);
@@ -440,7 +467,6 @@ public:
             }
         }
 
-  
         if (songHasLyrics && m_precompiledVocalPlans.size() > 1) {
             const size_t nPlans = m_precompiledVocalPlans.size();
             for (size_t i = 0; i < nPlans; ++i) {
@@ -462,7 +488,6 @@ public:
         }
 
         int totalSongTicks = std::max(192, currentMatraGlobal * 48);
-
         int talaMatras = BuiltInPresets::parseTotalMatras(kt.divisions);
         m_drumLoopTicks.store(std::max(48, talaMatras * 48));
         m_totalLoopTicks = std::max(m_drumLoopTicks.load(), totalSongTicks);
@@ -502,7 +527,9 @@ public:
                 }
             }
         }
-        m_trackNotes[TRACK_SHANKHA1].push_back(SongNote(0, 240, 60, 1.0f));
+        // Shankha 1 pre-baked hit scheduled at tick 0
+        m_trackNotes[20].push_back(SongNote(0, 240, 60, 1.0f));
+
         m_songTickPos = 0.0f;
         m_lastTriggeredTick = -1;
     }
@@ -532,7 +559,7 @@ public:
                     if (m_clickEnv > 0.001f) {
                         float clickFreq = (cdBeats == 1) ? 1200.0f : 880.0f;
                         mix += XpressiveParser::lut().sinRad(2.0f * M_PI_F * clickFreq * m_countdownTimerSec) * m_clickEnv * 0.4f;
-                        m_clickEnv *= std::exp(-dt * 35.0f);
+                        m_clickEnv *= fastExpNeg(dt * 35.0f);
                     }
                     m_countdownTimerSec += dt;
                     if (m_countdownTimerSec >= beatDurationSec) {
@@ -566,8 +593,6 @@ public:
                                         if (!presetHarmOn || m_trackMuted[TRACK_HARMONIUM]) {
                                             m_detectedMidiNote.store(sn.key + saOffset);
                                         }
-                                    } else if (tIdx == TRACK_SHANKHA1 || tIdx == TRACK_SHANKHA2) {
-                                        triggerShankhaVoice(sn.key + saOffset, sn.lenTicks * secPerTick, tIdx == TRACK_SHANKHA2);
                                     }
                                 }
                             }
@@ -592,33 +617,12 @@ public:
                 }
             }
 
-            if (m_shankhaVoice.active) {
-                int shTrk = m_shankhaVoice.useSecondAst ? TRACK_SHANKHA2 : TRACK_SHANKHA1;
-                auto* shAst = m_shankhaVoice.useSecondAst ? m_shankhaAst2.get() : m_shankhaAst1.get();
-                if (m_trackMuted[shTrk] || !shAst || m_shankhaVoice.t >= m_shankhaVoice.durSec) {
-                    m_shankhaVoice.active = false;
-                } else {
-                    XpressiveParser::Env env;
-                    env.t = m_shankhaVoice.t;
-                    env.tempo = currentBpm;
-                    env.srate = m_srate;
-                    env.f = midiToFreq(m_shankhaVoice.midiNote);
-                    env.lastOut = m_shankhaVoice.lastOut;
-                    env.intState = m_shankhaVoice.intState;
-                    env.numIntegrators = 8;
-                    float sOut = shAst->eval(env);
-                    m_shankhaVoice.lastOut = sOut;
-                    mix += sOut * 0.20f;
-                    m_shankhaVoice.t += dt;
-                }
-            }
-
             if (m_droneEnabled.load() && m_droneLoopBuf && m_droneLoopLen > 0) {
                 mix += static_cast<float>(m_droneLoopBuf[m_droneReadIdx]) * (1.0f / 32768.0f);
                 if (++m_droneReadIdx >= m_droneLoopLen) m_droneReadIdx = 0;
             }
 
-if (!m_trackMuted[TRACK_HARMONIUM]) {
+            if (!m_trackMuted[TRACK_HARMONIUM]) {
                 float harmMix = 0.0f;
                 for (auto& hv : m_harmVoices) {
                     if (!hv.active) continue;
@@ -669,7 +673,7 @@ if (!m_trackMuted[TRACK_HARMONIUM]) {
                 }
             }
 
-            outMono[i] = std::tanh(mix);
+            outMono[i] = fastTanh(mix);
         }
     }
 
@@ -739,7 +743,6 @@ if (!m_trackMuted[TRACK_HARMONIUM]) {
         for (auto& dv : m_drumVoices) dv.active = false;
         for (auto& hv : m_harmVoices) if (hv.isAutoPreset) hv.active = false;
         if (m_singVoice.isAutoPreset) m_singVoice.active = false;
-        m_shankhaVoice.active = false;
     }
 
     void togglePause() {
@@ -804,7 +807,7 @@ if (!m_trackMuted[TRACK_HARMONIUM]) {
         m_trackMuted[TRACK_SINGING] = !(en && m_hasSingingData.load());
         if (!en) m_singVoice.active = false;
     }
-    void toggleSingingEnabled() { setSingingEnabled(! isSingingEnabled()); }
+    void toggleSingingEnabled() { setSingingEnabled(!isSingingEnabled()); }
 
     bool hasSingingData() const { return m_hasSingingData.load(); }
 
@@ -834,7 +837,6 @@ private:
         float f1, f2, f3;
         float alpha1, alpha2, alpha3;
         float g1, g2, g3;
- 
         float b1, b2, b3;
     };
 
@@ -861,7 +863,7 @@ private:
     struct FricativeBandpassSVF {
         float low = 0.0f, band = 0.0f;
         inline float process(float input, float cutoffHz, float qDamper, float srate) {
-            float f = 2.0f * XpressiveParser::lut().sinRad(M_PI_F * my_clamp(cutoffHz, 300.0f, srate * 0.42f) / srate);
+            float f = 2.0f * XpressiveParser::lut().sinUnit(M_PI_F * my_clamp(cutoffHz, 300.0f, srate * 0.42f) / srate);
             low += f * band;
             float high = input - low - qDamper * band;
             band += f * high;
@@ -870,9 +872,7 @@ private:
         void reset() { low = 0.0f; band = 0.0f; }
     };
 
-    
     struct VocalSyllablePlan {
-
         float onsetGapSec   = 0.0f;
         float onsetDurSec   = 0.045f;
         float onsetA1       = 0.0f;
@@ -935,7 +935,6 @@ private:
         float intState[16] = {0};
     };
 
-  
     struct SingingVoice {
         bool active = false;
         bool held = false;
@@ -951,7 +950,6 @@ private:
         float curA1 = 0.0f;
         float curA3 = 0.5f;
 
-    
         float curF1 = 800.0f, curF2 = 1200.0f, curF3 = 2500.0f;
         float curB1 = 80.0f, curB2 = 90.0f, curB3 = 120.0f;
         float cycleShimmer = 1.0f;
@@ -961,16 +959,6 @@ private:
         FricativeBandpassSVF fricSvf, breathSvf;
 
         VocalSyllablePlan plan;
-    };
-
-    struct ShankhaVoice {
-        bool active = false;
-        bool useSecondAst = false;
-        int midiNote = 60;
-        float t = 0.0f;
-        float durSec = 1.5f;
-        float lastOut = 0.0f;
-        float intState[8] = {0};
     };
 
     void initPrecompiledFormantLut() {
@@ -1035,8 +1023,6 @@ private:
     static VocalSyllablePlan makeLegatoContinuation(const VocalSyllablePlan& prev) {
         VocalSyllablePlan plan = prev;
         plan.isLegatoMelisma = true;
-
-
         plan.preFricDurSec   = 0.0f;
         plan.preFricAmp      = 0.0f;
         plan.stopGapSec      = 0.0f;
@@ -1046,17 +1032,13 @@ private:
         plan.locusF1         = prev.vowelF1;
         plan.locusF2         = prev.vowelF2;
         plan.locusF3         = prev.vowelF3;
-
-
         plan.onsetGapSec     = 0.0f;
         plan.noiseAmp        = 0.0f;
         plan.hasNasalOnset   = false;
         plan.hasVoiceBar     = false;
         plan.hasTrillOnset   = false;
-
         return plan;
     }
-
 
     VocalSyllablePlan compileSanskritSyllable(const char* syl) const {
         VocalSyllablePlan plan;
@@ -1084,7 +1066,6 @@ private:
             plan.vowelA1 = 0.00f;
         }
 
-      
         int vIdx = my_clamp(static_cast<int>(plan.vowelA1 * 255.0f + 0.5f), 0, 255);
         plan.vowelF1 = m_formantLut[vIdx].f1;
         plan.vowelF2 = m_formantLut[vIdx].f2;
@@ -1093,7 +1074,6 @@ private:
         plan.vowelB2 = m_formantLut[vIdx].b2;
         plan.vowelB3 = m_formantLut[vIdx].b3;
 
-      
         plan.locusF1 = plan.vowelF1;
         plan.locusF2 = plan.vowelF2;
         plan.locusF3 = plan.vowelF3;
@@ -1148,7 +1128,6 @@ private:
             plan.onsetA1 = plan.vowelA1;
         }
 
-      
         if (str.rfind("ste", 0) == 0 || str.rfind("st", 0) == 0 || str.rfind("s", 0) == 0) {
             plan.onsetGapSec  = (str.rfind("st", 0) == 0) ? 0.012f : 0.0f;
             plan.onsetDurSec  = 0.050f;
@@ -1157,7 +1136,6 @@ private:
             plan.noiseAmp     = 0.88f;
             plan.noiseDecay   = 34.0f;
             plan.noiseFreq    = 4500.0f;
-
             plan.preFricDurSec = 0.040f;
             plan.preFricFreq   = 4650.0f;
             plan.preFricAmp    = 0.88f;
@@ -1175,7 +1153,6 @@ private:
             plan.noiseAmp     = 0.78f;
             plan.noiseDecay   = 52.0f;
             plan.noiseFreq    = 1850.0f;
-
             plan.stopGapSec    = 0.015f;
             plan.burstDurSec   = (str.rfind("ksh", 0) == 0) ? 0.048f : 0.020f;
             plan.burstFreq     = (str.rfind("ksh", 0) == 0) ? 2750.0f : ((plan.vowelF2 > 1500.0f) ? 2150.0f : 1450.0f);
@@ -1192,7 +1169,6 @@ private:
             plan.noiseAmp     = 0.85f;
             plan.noiseDecay   = 32.0f;
             plan.noiseFreq    = 2850.0f;
-
             plan.preFricDurSec = 0.042f;
             plan.preFricFreq   = 2650.0f;
             plan.preFricAmp    = 0.85f;
@@ -1211,7 +1187,6 @@ private:
             plan.noiseDecay   = 36.0f;
             plan.noiseFreq    = 1650.0f;
             plan.aspiration   = 0.32f;
-
             plan.preFricDurSec = 0.028f;
             plan.preFricFreq   = plan.vowelF2;
             plan.preFricAmp    = 0.48f;
@@ -1225,7 +1200,6 @@ private:
             plan.noiseAmp     = 0.75f;
             plan.noiseDecay   = 60.0f;
             plan.noiseFreq    = 3300.0f;
-
             plan.stopGapSec    = 0.017f;
             plan.burstDurSec   = 0.016f;
             plan.burstFreq     = 3450.0f;
@@ -1242,11 +1216,9 @@ private:
             plan.noiseAmp     = 0.68f;
             plan.noiseDecay   = 58.0f;
             plan.noiseFreq    = 1100.0f;
-
             plan.stopGapSec    = 0.016f;
             plan.burstDurSec   = 0.018f;
             plan.burstFreq     = 950.0f;
-           
             plan.burstBwQ      = 0.25f;
             plan.burstAmp      = 0.65f;
             plan.locusF1       = 280.0f;
@@ -1296,10 +1268,10 @@ private:
         const float dur = std::max(0.12f, m_singVoice.autoDurSec);
 
         m_singVoice.curFreq += (m_singVoice.targetFreq - m_singVoice.curFreq) * std::min(1.0f, dt * 65.0f);
-        float vibEnv = 1.0f - std::exp(-3.5f * t);
+        float vibEnv = 1.0f - fastExpNeg(3.5f * t);
         float vib1 = 0.011f * vibEnv * lut.sinUnit(5.5f * t);
         float vib2 = 0.011f * vibEnv * lut.sinUnit(5.8f * t + 0.17f);
-        float pitchScoop = -0.022f * std::exp(-28.0f * t);
+        float pitchScoop = -0.022f * fastExpNeg(28.0f * t);
 
         float f0_1 = m_singVoice.curFreq * (1.0f + pitchScoop + vib1);
         float f0_2 = m_singVoice.curFreq * 1.0025f * (1.0f + pitchScoop + vib2);
@@ -1371,16 +1343,16 @@ private:
         float tau2 = phi2 / f0_2;
 
         float oneMinusPhi1 = 1.0f - phi1;
-        float fofWin1 = (1.0f - std::exp(-140.0f * phi1)) * (oneMinusPhi1 * oneMinusPhi1);
+        float fofWin1 = (1.0f - fastExpNeg(140.0f * phi1)) * (oneMinusPhi1 * oneMinusPhi1);
 
-        float env1 = slice.g1 * std::exp(-slice.alpha1 * tau1);
-        float env2 = slice.g2 * std::exp(-slice.alpha2 * tau1);
-        float env3 = slice.g3 * std::exp(-slice.alpha3 * tau1);
+        float env1 = slice.g1 * fastExpNeg(slice.alpha1 * tau1);
+        float env2 = slice.g2 * fastExpNeg(slice.alpha2 * tau1);
+        float env3 = slice.g3 * fastExpNeg(slice.alpha3 * tau1);
 
         float fof1 = env1 * lut.sinUnit(F1 * tau1)
                      + env2 * lut.sinUnit(F2 * tau1)
                      + env3 * lut.sinUnit(F3 * tau1)
-                     + 0.12f * std::exp(-420.0f * tau1) * lut.sinUnit(3150.0f * tau1);
+                     + 0.12f * fastExpNeg(420.0f * tau1) * lut.sinUnit(3150.0f * tau1);
 
         float n1 = std::max(1.0f, std::floor(F1 / f0_1 + 0.5f));
         float n2 = std::max(1.0f, std::floor(F2 / f0_1 + 0.5f));
@@ -1392,14 +1364,14 @@ private:
                              );
 
         float oneMinusPhi2 = 1.0f - phi2;
-        float fofWin2 = (1.0f - std::exp(-140.0f * phi2)) * (oneMinusPhi2 * oneMinusPhi2);
-        float fof2 = slice.g1 * std::exp(-slice.alpha1 * tau2) * lut.sinUnit(slice.f1 * scale2 * tau2)
-                     + slice.g2 * std::exp(-slice.alpha2 * tau2) * lut.sinUnit(slice.f2 * scale2 * tau2)
-                     + slice.g3 * std::exp(-slice.alpha3 * tau2) * lut.sinUnit(slice.f3 * scale2 * f3RetroflexPull * tau2);
+        float fofWin2 = (1.0f - fastExpNeg(140.0f * phi2)) * (oneMinusPhi2 * oneMinusPhi2);
+        float fof2 = slice.g1 * fastExpNeg(slice.alpha1 * tau2) * lut.sinUnit(slice.f1 * scale2 * tau2)
+                     + slice.g2 * fastExpNeg(slice.alpha2 * tau2) * lut.sinUnit(slice.f2 * scale2 * tau2)
+                     + slice.g3 * fastExpNeg(slice.alpha3 * tau2) * lut.sinUnit(slice.f3 * scale2 * f3RetroflexPull * tau2);
 
         float chestFund = 0.28f * lut.sinUnit(phi1) * (oneMinusPhi1 * oneMinusPhi1);
-        float nasalWave = (0.55f * lut.sinUnit(phi1) + 0.25f * std::exp(-180.0f * tau1) * lut.sinUnit(260.0f * tau1)
-                           + 0.12f * std::exp(-400.0f * tau1) * lut.sinUnit(1000.0f * tau1)) * fofWin1;
+        float nasalWave = (0.55f * lut.sinUnit(phi1) + 0.25f * fastExpNeg(180.0f * tau1) * lut.sinUnit(260.0f * tau1)
+                           + 0.12f * fastExpNeg(400.0f * tau1) * lut.sinUnit(1000.0f * tau1)) * fofWin1;
 
         float voicedCore = (0.58f * fofWin1 * fof1 + 0.22f * fofWin2 * fof2 + 0.20f * samLayer + chestFund);
         voicedCore = (1.0f - nasalMix) * voicedCore + nasalMix * nasalWave;
@@ -1413,19 +1385,19 @@ private:
             }
         } else {
             float tVoiced = t - plan.onsetGapSec;
-            voicedGate = (1.0f - std::exp(-45.0f * tVoiced)) * trillMod * (1.0f - 0.65f * codaBreath);
+            voicedGate = (1.0f - fastExpNeg(45.0f * tVoiced)) * trillMod * (1.0f - 0.65f * codaBreath);
         }
 
         float chaosFm = lut.sinUnit(plan.noiseFreq * t + 2.75f * lut.sinUnit(7919.0f * t + 1.85f * lut.sinUnit(13411.0f * t)));
         float burstTime = std::max(0.0f, t - plan.onsetGapSec * 0.75f);
         float onsetNoise = (t >= plan.onsetGapSec * 0.75f)
-                               ? (plan.noiseAmp * 0.36f * std::exp(-plan.noiseDecay * burstTime) * chaosFm)
+                               ? (plan.noiseAmp * 0.36f * fastExpNeg(plan.noiseDecay * burstTime) * chaosFm)
                                : 0.0f;
 
         float breathNoise = (plan.aspiration + codaBreath) * 0.24f * lut.sinUnit(0.5f * phi1)
                             * chaosFm * lut.sinUnit(F2 * t);
 
-        float releaseEnv = std::exp(-m_singVoice.trel * 16.0f);
+        float releaseEnv = fastExpNeg(m_singVoice.trel * 16.0f);
         return releaseEnv * (voicedGate * voicedCore + onsetNoise + breathNoise);
     }
 
@@ -1436,51 +1408,33 @@ private:
         return sargam[((relSemitone % 12) + 12) % 12];
     }
 
-
     inline float renderFastHarmoniumSample(HarmoniumVoice& hv, float currentBpm, float dt) {
         const auto& lut = XpressiveParser::lut();
         const float f = midiToFreq(hv.midiNote);
 
-        
         hv.intState[0] += (currentBpm * (1.0f / 120.0f)) * dt;
-        hv.intState[0] -= std::floor(hv.intState[0]);
         const float lfo = lut.sinUnit(hv.intState[0]);
 
-        
         hv.intState[1] += (f * (1.0f - 0.00231049f * lfo)) * dt;
-        hv.intState[1] -= std::floor(hv.intState[1]);
-
         hv.intState[2] += f * dt;
         const float basePhase = hv.intState[2];
 
-        
+        // Utilizing pre-summed harmonic tables from SineLUT
         const float reed1 = (lut.sinUnit(hv.intState[1]) - 0.5f * lut.sinUnit(2.0f * basePhase)) +
-                            (0.75f + 0.25f * lfo) * (lut.sinUnit(3.0f * basePhase) * (1.0f / 3.0f) -
-                                                     0.25f * lut.sinUnit(4.0f * basePhase) +
-                                                     0.20f * lut.sinUnit(5.0f * basePhase));
+                            (0.75f + 0.25f * lfo) * lut.reedUpperUnit(basePhase);
 
+        const float reed2 = 0.45f * lut.reedBaseUnit(basePhase * 1.0046316f);
+        const float reed3 = 0.65f * lut.reedBaseUnit(basePhase * 0.5f);
 
-        const float celestePhase = basePhase * 1.0046316f;
-        const float reed2 = 0.45f * (lut.sinUnit(celestePhase) -
-                                     0.5f * lut.sinUnit(2.0f * celestePhase) +
-                                     lut.sinUnit(3.0f * celestePhase) * (1.0f / 3.0f));
-
-       
-        const float subPhase = basePhase * 0.5f;
-        const float reed3 = 0.65f * (lut.sinUnit(subPhase) -
-                                     0.5f * lut.sinUnit(2.0f * subPhase) +
-                                     lut.sinUnit(3.0f * subPhase) * (1.0f / 3.0f));
-
-        const float attackEnv = (hv.t < 0.7f) ? (1.0f - std::exp(-hv.t * 8.0f)) : 1.0f;
-        const float relEnv    = hv.held ? 1.0f : std::exp(-hv.trel * 18.0f);
+        const float attackEnv = (hv.t < 0.7f) ? (1.0f - fastExpNeg(hv.t * 8.0f)) : 1.0f;
+        const float relEnv    = hv.held ? 1.0f : fastExpNeg(hv.trel * 18.0f);
         const float env       = attackEnv * relEnv * (0.82f + 0.18f * lfo);
 
         return env * (reed1 + reed2 + reed3);
     }
 
-
     inline float midiToFreq(int midiNote) const {
-        return m_a4Hz.load() * std::pow(2.0f, (midiNote - 69) * (1.0f / 12.0f));
+        return m_midiFreqLut[my_clamp(midiNote, 0, 127)];
     }
 
     void triggerBakedDrum(int trackIdx) {
@@ -1539,22 +1493,12 @@ private:
         }
     }
 
-    void triggerShankhaVoice(int midiNote, float durSec, bool secondAst = false) {
-        m_shankhaVoice.active = true;
-        m_shankhaVoice.useSecondAst = secondAst;
-        m_shankhaVoice.midiNote = midiNote;
-        m_shankhaVoice.t = 0.0f;
-        m_shankhaVoice.durSec = durSec;
-        m_shankhaVoice.lastOut = 0.0f;
-        std::memset(m_shankhaVoice.intState, 0, sizeof(m_shankhaVoice.intState));
-    }
-
     std::mutex m_mutex;
     float m_srate = 22050.0f;
+    float m_midiFreqLut[128] = {0.0f};
 
     PrecompiledFormantSlice m_formantLut[256];
     std::vector<VocalSyllablePlan> m_precompiledVocalPlans;
-
 
     float m_vocalChamberBuf[VOCAL_CHAMBER_LEN] = {0};
     int m_vocalChamberIdx = 0;
@@ -1575,11 +1519,9 @@ private:
     std::unique_ptr<XpressiveParser::Node> m_singingAst;
     std::unique_ptr<XpressiveParser::Node> m_shrutiO1, m_shrutiO2;
     std::unique_ptr<XpressiveParser::Node> m_tanpuraO1, m_tanpuraO2;
-    std::unique_ptr<XpressiveParser::Node> m_shankhaAst1, m_shankhaAst2;
 
     std::array<HarmoniumVoice, 6> m_harmVoices;
     SingingVoice m_singVoice;
-    ShankhaVoice m_shankhaVoice;
 
     std::vector<SongNote> m_trackNotes[NUM_TRACKS];
     bool m_trackMuted[NUM_TRACKS] = {false};
