@@ -5,7 +5,7 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: 
+  workflow_dispatch:
 
 jobs:
   build:
@@ -25,15 +25,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install platformio
 
-    - name: Compile ESP32-S3 Firmware
-      run: pio run
+    - name: Compile Both ESP32-S3 Targets
+      run: |
+        pio run -e waveshare_7inch_800x480
+        pio run -e devkit_spi_28inch_320x240
 
-    - name: Upload Compiled Firmware Binaries
+    - name: Organize Output Folders with Identical Binary Names
+      run: |
+        mkdir -p dist/waveshare_7inch_800x480
+        mkdir -p dist/devkit_spi_28inch_320x240
+        cp .pio/build/waveshare_7inch_800x480/firmware.bin dist/waveshare_7inch_800x480/firmware.bin
+        cp .pio/build/waveshare_7inch_800x480/partitions.bin dist/waveshare_7inch_800x480/partitions.bin
+        cp .pio/build/waveshare_7inch_800x480/bootloader.bin dist/waveshare_7inch_800x480/bootloader.bin
+        cp .pio/build/devkit_spi_28inch_320x240/firmware.bin dist/devkit_spi_28inch_320x240/firmware.bin
+        cp .pio/build/devkit_spi_28inch_320x240/partitions.bin dist/devkit_spi_28inch_320x240/partitions.bin
+        cp .pio/build/devkit_spi_28inch_320x240/bootloader.bin dist/devkit_spi_28inch_320x240/bootloader.bin
+
+    - name: Upload Compiled Firmware Artifact (Both Folders)
       uses: actions/upload-artifact@v4
       with:
-        name: esp32s3-firmware
-        path: |
-          .pio/build/waveshare_esp32s3_touch_lcd_7/firmware.bin
-          .pio/build/waveshare_esp32s3_touch_lcd_7/partitions.bin
-          .pio/build/waveshare_esp32s3_touch_lcd_7/bootloader.bin
+        name: esp32s3-harmonium-firmwares
+        path: dist/
         retention-days: 7
