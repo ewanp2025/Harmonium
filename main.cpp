@@ -5,12 +5,10 @@
 #include <algorithm>
 #include <string>
 #include <vector>
-#include <algorithm>
 #include <cctype>
 
 #include "i18n.h"
 #include "synthengine.h"
-
 
 #ifdef ESP32
 #include <Arduino.h>
@@ -61,12 +59,95 @@ static const char* WESTERN_NOTES[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G
 enum AppView { VIEW_LIVE, VIEW_TALA_ED, VIEW_HARM_ED };
 static AppView g_currentView = VIEW_LIVE;
 
-enum ModalState { MODAL_NONE, MODAL_BOL, MODAL_KARTAL, MODAL_SWARA, MODAL_FILE_LOAD, MODAL_SAVE_KBD, MODAL_BT_PAIR };
+enum ModalState { MODAL_NONE, MODAL_BOL, MODAL_KARTAL, MODAL_SWARA, MODAL_FILE_LOAD, MODAL_SAVE_KBD, MODAL_GPIO_CFG };
 static ModalState g_modalState = MODAL_NONE;
 static int g_editingCellIdx = -1;
 static std::vector<std::string> g_fileList;
 static std::string g_kbdInput;
 static int g_audioOutMode = 1; // 0 = USB, 1 = I2S, 2 = WIFI
+
+struct BoardGpioConfig {
+    int i2sBclk   = I2S_BCLK_PIN;
+    int i2sLrck   = I2S_LRCK_PIN;
+    int i2sDout   = I2S_DOUT_PIN;
+    int belPosPin = -1; // -1 = OFF, or ADC GPIO pin
+    int belDepPin = -1; // -1 = derive pumping speed from POS pin, or 2nd ADC GPIO pin
+};
+static BoardGpioConfig g_pins;
+static float g_prevPosNorm = 0.5f;
+static float g_smoothedVelDep = 0.8f;
+
+static void applyI2SPins() {
+#ifdef ESP32
+    i2s_pin_config_t pin_cfg = {};
+    pin_cfg.bck_io_num   = g_pins.i2sBclk;
+    pin_cfg.ws_io_num    = g_pins.i2sLrck;
+    pin_cfg.data_out_num = g_pins.i2sDout;
+    pin_cfg.data_in_num  = I2S_PIN_NO_CHANGE;
+    i2s_set_pin(I2S_NUM_0, &pin_cfg);
+#endif
+}
+
+static void saveGpioConfig() {
+#ifdef ESP32
+    File f = LittleFS.open("/gpio_cfg.json", "w");
+    if (f) {
+        JsonDocument doc;
+        doc["bclk"]   = g_pins.i2sBclk;
+        doc["lrck"]   = g_pins.i2sLrck;
+        doc["dout"]   = g_pins.i2sDout;
+        doc["belPos"] = g_pins.belPosPin;
+        doc["belDep"] = g_pins.belDepPin;
+        serializeJson(doc, f);
+        f.close();
+    }
+    if (g_pins.belPosPin >= 0) pinMode(g_pins.belPosPin, INPUT);
+    if (g_pins.belDepPin >= 0) pinMode(g_pins.belDepPin, INPUT);
+#endif
+    applyI2SPins();
+}
+
+static void loadGpioConfig() {
+#ifdef ESP32
+    File f = LittleFS.open("/gpio_cfg.json", "r");
+    if (!f) return;
+    JsonDocument doc;
+    if (!deserializeJson(doc, f)) {
+        g_pins.i2sBclk   = doc["bclk"]   | I2S_BCLK_PIN;
+        g_pins.i2sLrck   = doc["lrck"]   | I2S_LRCK_PIN;
+        g_pins.i2sDout   = doc["dout"]   | I2S_DOUT_PIN;
+        g_pins.belPosPin = doc["belPos"] | -1;
+        g_pins.belDepPin = doc["belDep"] | -1;
+    }
+    f.close();
+    if (g_pins.belPosPin >= 0) pinMode(g_pins.belPosPin, INPUT);
+    if (g_pins.belDepPin >= 0) pinMode(g_pins.belDepPin, INPUT);
+#endif
+}
+
+static void pollBellowsGpioPins() {
+    if (!engine.isBellowsPosManual() && !engine.isBellowsDepManual()) return;
+#ifdef ESP32
+    float posNorm = g_prevPosNorm;
+    if (g_pins.belPosPin >= 0) {
+        int rawPos = analogRead(g_pins.belPosPin);
+        posNorm = std::clamp(rawPos / 4095.0f, 0.0f, 1.0f);
+    }
+
+    float depNorm = 1.0f;
+    if (g_pins.belDepPin >= 0) {
+        int rawDep = analogRead(g_pins.belDepPin);
+        depNorm = std::clamp(rawDep / 4095.0f, 0.0f, 1.2f);
+    } else {
+        // No 2nd sensor wired: derive bellows pressure from pumping speed |dPos/dt|
+        float speed = std::fabs(posNorm - g_prevPosNorm) * 18.0f;
+        g_smoothedVelDep = std::clamp(g_smoothedVelDep * 0.92f + speed * 0.65f, 0.15f, 1.2f);
+        depNorm = g_smoothedVelDep;
+    }
+    g_prevPosNorm = posNorm;
+    engine.updateBellowsSensors(posNorm, depNorm);
+#endif
+}
 
 static const char* VALID_DIVISIONS[] = {"4+4+4+4", "4+4", "3+3", "4+4+4", "3+2+2", "2+3+2+3"};
 
@@ -114,7 +195,6 @@ static inline bool hitBox(const TouchButton& b, int tx, int ty) {
     return (tx >= b.x && tx < b.x + b.w && ty >= b.y && ty < b.y + b.h);
 }
 
-
 // HELPER FUNCTIONS
 
 static std::vector<int> parseVibhags(const char* divStr) {
@@ -144,15 +224,16 @@ static std::vector<std::string> getTaliKhaliLabels(const std::vector<int>& divs)
     return res;
 }
 
-
 // UI LAYOUT CONSTANTS
 
-static const TouchButton TAB_LIVE  = { 16,  6, 110, 34};
-static const TouchButton TAB_TALA  = {130,  6, 130, 34};
-static const TouchButton TAB_HARM  = {264,  6, 130, 34};
-static const TouchButton BTN_AUDIO = {398,  6, 130, 34};
-static const TouchButton BTN_BT    = {532,  6, 150, 34};
-static const TouchButton BTN_LANG  = {686,  6,  98, 34};
+static const TouchButton TAB_LIVE    = {  6,  6,  90, 34};
+static const TouchButton TAB_TALA    = {100,  6, 115, 34};
+static const TouchButton TAB_HARM    = {219,  6, 115, 34};
+static const TouchButton BTN_AUDIO   = {338,  6, 112, 34};
+static const TouchButton BTN_BEL_POS = {454,  6,  86, 34};
+static const TouchButton BTN_BEL_DEP = {544,  6,  86, 34};
+static const TouchButton BTN_GPIO    = {634,  6,  66, 34};
+static const TouchButton BTN_LANG    = {704,  6,  90, 34};
 
 // Live View Controls
 static const TouchButton BTN_START     = {  6,  46,  86, 34};
@@ -199,7 +280,6 @@ static const int PIANO_H = 134;
 static const int PIANO_START_MIDI = 48;
 static const int PIANO_NUM_KEYS   = 37;
 
-
 // TOUCH PIANO LOGIC
 
 static inline bool isBlackKey(int midi) {
@@ -242,9 +322,7 @@ static int hitTestPiano(int tx, int ty) {
     return -1;
 }
 
-
 // DRAWING ROUTINES
-
 
 static void drawButton(const TouchButton& b, const char* label, uint16_t bgCol, uint16_t borderCol = 0x5AEB, uint16_t textCol = 0xFFFF) {
     g_tft->fillRoundRect(b.x, b.y, b.w, b.h, 4, bgCol);
@@ -269,11 +347,16 @@ static void drawTabs() {
     drawButton(BTN_AUDIO, "OUT: QT PC", rgb565(37, 40, 48), rgb565(0, 229, 255), 0xFFFF);
 #endif
 
+    bool posMan = engine.isBellowsPosManual();
+    drawButton(BTN_BEL_POS, posMan ? "POS:MAN" : "POS:AUTO",
+               posMan ? rgb565(230, 81, 0) : rgb565(37, 40, 48), rgb565(255, 202, 40), 0xFFFF);
+
+    bool depMan = engine.isBellowsDepManual();
+    drawButton(BTN_BEL_DEP, depMan ? "DEP:MAN" : "DEP:AUTO",
+               depMan ? rgb565(230, 81, 0) : rgb565(37, 40, 48), rgb565(255, 202, 40), 0xFFFF);
+
+    drawButton(BTN_GPIO, "PINS", rgb565(55, 71, 79), rgb565(0, 229, 255), 0xFFFF);
     drawButton(BTN_LANG, L().menuLabel, rgb565(30, 41, 59), rgb565(0, 229, 255), rgb565(0, 229, 255));
-    
-    auto& bt = BtAudioManager::instance();
-    std::string btLbl = bt.isConnected() ? ("BT: " + bt.getSavedName().substr(0, 10)) : "BT PAIR/AUDIO";
-    drawButton(BTN_BT, btLbl.c_str(), bt.isConnected() ? rgb565(2, 119, 189) : rgb565(37, 40, 48), rgb565(0, 229, 255), 0xFFFF);
 }
 
 static void drawEditorNavRow(const char* name, const char* divisions) {
@@ -320,7 +403,6 @@ static void drawKeyboard() {
     g_tft->setTextDatum(MC_DATUM);
     g_tft->drawString("ENTER FILE NAME TO SAVE (without .mhb):", 400, 60);
 
-    // Input Box
     g_tft->fillRect(100, 100, 600, 50, rgb565(37, 40, 48));
     g_tft->drawRect(100, 100, 600, 50, rgb565(255, 202, 40));
     g_tft->setTextColor(0xFFFF, rgb565(37, 40, 48));
@@ -606,9 +688,7 @@ static void drawFooter() {
     g_tft->drawString(g_midiConnected ? lang.midiConnected : lang.midiPcMode, 792, 468);
 }
 
-
 // WINDOWS EDITOR LAYOUTS
-
 
 static void drawTalaEditor() {
     auto& kt = const_cast<std::vector<TalaTheka>&>(BuiltInPresets::getTalaThekas())[engine.getSelectedTala()];
@@ -711,37 +791,44 @@ static void drawModalSelector() {
     }
 }
 
-static void drawBtModal() {
-    auto& bt = BtAudioManager::instance();
-    g_tft->fillRect(40, 30, 720, 420, rgb565(15, 20, 25));
-    g_tft->drawRect(40, 30, 720, 420, rgb565(0, 229, 255));
+static void drawGpioModal() {
+    g_tft->fillRect(60, 44, 680, 400, rgb565(15, 20, 25));
+    g_tft->drawRect(60, 44, 680, 400, rgb565(0, 229, 255));
     g_tft->setTextColor(rgb565(255, 202, 40), rgb565(15, 20, 25));
     g_tft->setTextDatum(MC_DATUM);
-    g_tft->drawString("BLUETOOTH PAIRING & DEVICE MANAGER", 400, 50);
+    g_tft->drawString("BOARD GPIO & I2S AUDIO DAC PIN SETUP", 400, 68);
 
-    g_tft->setTextColor(rgb565(0, 229, 255), rgb565(15, 20, 25));
-    g_tft->drawString(bt.getStatusText().c_str(), 400, 74);
+    const char* labels[5] = {
+        "I2S Audio BCLK (Bit Clock):",
+        "I2S Audio LRCK / WS (Word Sel):",
+        "I2S Audio DOUT (Data Out):",
+        "Bellows POS (Position ADC Pin):",
+        "Bellows DEP (Depth/Press Pin):"
+    };
+    int vals[5] = {g_pins.i2sBclk, g_pins.i2sLrck, g_pins.i2sDout, g_pins.belPosPin, g_pins.belDepPin};
 
-    drawButton({60,  94, 190, 36}, bt.isScanning() ? "SCANNING..." : "SCAN PAIR MODE", rgb565(0, 105, 92));
-    drawButton({265, 94, 190, 36}, "FORGET SAVED", rgb565(183, 28, 28));
-    drawButton({620, 94, 120, 36}, "CLOSE", rgb565(55, 71, 79));
+    for (int i = 0; i < 5; ++i) {
+        int ry = 104 + i * 52;
+        g_tft->setTextColor(0xFFFF, rgb565(15, 20, 25));
+        g_tft->setTextDatum(ML_DATUM);
+        g_tft->drawString(labels[i], 90, ry + 18);
 
-    const auto& devs = bt.getDevices();
-    for (size_t i = 0; i < devs.size() && i < 8; ++i) {
-        TouchButton b = {60 + static_cast<int>(i % 2) * 345, 145 + static_cast<int>(i / 2) * 68, 335, 56};
-        bool isSaved = (!bt.getSavedMac().empty() && devs[i].mac == bt.getSavedMac());
-        char lbl[80];
-        std::snprintf(lbl, sizeof(lbl), "%s (%ddBm)%s",
-                      devs[i].name.substr(0, 18).c_str(), devs[i].rssi, isSaved ? " [PAIRED]" : "");
-        drawButton(b, lbl, isSaved ? rgb565(27, 94, 32) : rgb565(37, 40, 48),
-                   isSaved ? rgb565(129, 199, 132) : rgb565(0, 172, 193), 0xFFFF);
+        TouchButton btnMinus = {430, ry, 56, 36};
+        TouchButton valBox   = {494, ry, 110, 36};
+        TouchButton btnPlus  = {612, ry, 56, 36};
+
+        char vBuf[24];
+        if (vals[i] < 0) std::snprintf(vBuf, sizeof(vBuf), (i == 4) ? "AUTO SPD" : "OFF (-1)");
+        else             std::snprintf(vBuf, sizeof(vBuf), "GPIO %d", vals[i]);
+
+        drawButton(btnMinus, "-", rgb565(55, 71, 79));
+        drawButton(valBox, vBuf, rgb565(37, 40, 48), rgb565(0, 229, 255));
+        drawButton(btnPlus, "+", rgb565(55, 71, 79));
     }
-    if (devs.empty()) {
-        g_tft->setTextColor(rgb565(180, 180, 180), rgb565(15, 20, 25));
-        g_tft->drawString("Put speaker/device in Pairing Mode and tap SCAN PAIR MODE", 400, 260);
-    }
+
+    drawButton({220, 380, 160, 42}, "SAVE & APPLY", rgb565(46, 125, 50));
+    drawButton({420, 380, 160, 42}, "CLOSE", rgb565(183, 28, 28));
 }
-
 
 static void redrawEntireScreen() {
 #ifndef ESP32
@@ -758,11 +845,11 @@ static void redrawEntireScreen() {
         drawKeyboard();
         return;
     }
-    if (g_modalState == MODAL_BT_PAIR) {
-        drawBtModal();
+    if (g_modalState == MODAL_GPIO_CFG) {
+        drawGpioModal();
         return;
     }
-    
+
     if (g_modalState != MODAL_NONE) {
         if (g_currentView == VIEW_TALA_ED) drawTalaEditor();
         else if (g_currentView == VIEW_HARM_ED) drawHarmEditor();
@@ -789,34 +876,40 @@ static void redrawEntireScreen() {
 static bool wasTouching = false;
 
 static void esp32LoopTick() {
+    pollBellowsGpioPins();
+
     uint16_t tx = 0, ty = 0;
     bool touching = g_tft->getTouch(&tx, &ty);
 
     if (touching && !wasTouching) {
-        if (g_modalState == MODAL_BT_PAIR) {
-            auto& bt = BtAudioManager::instance();
-            if (hitBox({60, 94, 190, 36}, tx, ty)) {
-                bt.startScan();
-            } else if (hitBox({265, 94, 190, 36}, tx, ty)) {
-                bt.forgetPairedDevice();
-            } else if (hitBox({620, 94, 120, 36}, tx, ty)) {
-                g_modalState = MODAL_NONE;
-            } else {
-                const auto& devs = bt.getDevices();
-                for (size_t i = 0; i < devs.size() && i < 8; ++i) {
-                    TouchButton b = {60 + static_cast<int>(i % 2) * 345, 145 + static_cast<int>(i / 2) * 68, 335, 56};
-                    if (hitBox(b, tx, ty)) {
-                        bt.selectAndPairDevice(static_cast<int>(i));
-                        break;
-                    }
+        if (g_modalState == MODAL_GPIO_CFG) {
+            int* pinPtrs[5] = {&g_pins.i2sBclk, &g_pins.i2sLrck, &g_pins.i2sDout, &g_pins.belPosPin, &g_pins.belDepPin};
+            for (int i = 0; i < 5; ++i) {
+                int ry = 104 + i * 52;
+                int minPin = (i >= 3) ? -1 : 0;
+                if (hitBox({430, ry, 56, 36}, tx, ty)) {
+                    *pinPtrs[i] = std::max(minPin, *pinPtrs[i] - 1);
+                } else if (hitBox({612, ry, 56, 36}, tx, ty)) {
+                    *pinPtrs[i] = std::min(48, *pinPtrs[i] + 1);
                 }
             }
+            if (hitBox({220, 380, 160, 42}, tx, ty)) {
+                saveGpioConfig();
+                g_modalState = MODAL_NONE;
+            } else if (hitBox({420, 380, 160, 42}, tx, ty)) {
+                g_modalState = MODAL_NONE;
+            }
             redrawEntireScreen();
-        } else if (hitBox(BTN_BT, tx, ty)) {
-            g_modalState = MODAL_BT_PAIR;
+        } else if (hitBox(BTN_BEL_POS, tx, ty)) {
+            engine.setBellowsPosManual(!engine.isBellowsPosManual());
+            drawTabs();
+        } else if (hitBox(BTN_BEL_DEP, tx, ty)) {
+            engine.setBellowsDepManual(!engine.isBellowsDepManual());
+            drawTabs();
+        } else if (hitBox(BTN_GPIO, tx, ty)) {
+            g_modalState = MODAL_GPIO_CFG;
             redrawEntireScreen();
-} else if (hitBox(BTN_AUDIO, tx, ty)) {
-            // Audio Routing Toggle: 0 = USB Audio Out, 1 = I2S (USB MIDI In), 2 = WIFI (USB MIDI In)
+        } else if (hitBox(BTN_AUDIO, tx, ty)) {
             g_audioOutMode = (g_audioOutMode + 1) % 3;
 #ifdef ESP32
             UsbAudioPartner::s_enableUsbAudio = (g_audioOutMode == 0);
@@ -913,7 +1006,6 @@ static void esp32LoopTick() {
             g_langIdx = (g_langIdx + 1) % static_cast<int>(I18n::getLanguages().size());
             redrawEntireScreen();
         } else if (g_currentView == VIEW_LIVE) {
-            // --- LIVE VIEW LOGIC ---
             int pianoMidi = hitTestPiano(tx, ty);
             if (pianoMidi >= 0) {
                 if (pianoMidi != g_touchHeldMidi) {
@@ -1026,7 +1118,6 @@ static void esp32LoopTick() {
                 }
             }
         } else if (g_currentView == VIEW_TALA_ED || g_currentView == VIEW_HARM_ED) {
-
             if (hitBox(TAB_LIVE, tx, ty)) { g_currentView = VIEW_LIVE; redrawEntireScreen(); }
             else if (hitBox(TAB_TALA, tx, ty)) { g_currentView = VIEW_TALA_ED; redrawEntireScreen(); }
             else if (hitBox(TAB_HARM, tx, ty)) { g_currentView = VIEW_HARM_ED; redrawEntireScreen(); }
@@ -1198,17 +1289,16 @@ static void initI2S() {
     i2s_cfg.tx_desc_auto_clear = true;
 
     i2s_pin_config_t pin_cfg = {};
-    pin_cfg.bck_io_num = I2S_BCLK_PIN;
-    pin_cfg.ws_io_num = I2S_LRCK_PIN;
-    pin_cfg.data_out_num = I2S_DOUT_PIN;
-    pin_cfg.data_in_num = I2S_PIN_NO_CHANGE;
+    pin_cfg.bck_io_num   = g_pins.i2sBclk;
+    pin_cfg.ws_io_num    = g_pins.i2sLrck;
+    pin_cfg.data_out_num = g_pins.i2sDout;
+    pin_cfg.data_in_num  = I2S_PIN_NO_CHANGE;
 
     i2s_driver_install(I2S_NUM_0, &i2s_cfg, 0, nullptr);
     i2s_set_pin(I2S_NUM_0, &pin_cfg);
     i2s_zero_dma_buffer(I2S_NUM_0);
 }
 
-// Master Audio Task routes audio intelligently to avoid duplicating the engine state pull
 static void masterAudioTask(void*) {
     float monoBuf[256];
     int16_t stereoBuf[512];
@@ -1231,21 +1321,18 @@ static void masterAudioTask(void*) {
             i2s_write(I2S_NUM_0, stereoBuf, sizeof(stereoBuf), &bytesWritten, portMAX_DELAY);
         }
 
-        // Always yield so loop() on Core 1 can process touch events and release m_mutex
         taskYIELD();
     }
-
 }
 
 void setup() {
     Serial.begin(115200);
     initFileSystem();
-    BtAudioManager::instance().begin();
+    loadGpioConfig();
+
     int dummyTala = 0, dummySong = 0;
     loadBankFromFile("/Default_Bank.mhb", dummyTala, dummySong);
 
-    // Start Wi-Fi SoftAP BEFORE g_display.init() with NVS flash persistence disabled
-    // so SPI flash writes never collide with the BufferedRGBBus PSRAM bounce-buffer ISR
     WiFi.persistent(false);
     WifiAudioStreamer::instance().begin(&engine);
 
@@ -1263,16 +1350,13 @@ void setup() {
     engine.init(AUDIO_SRATE);
     initI2S();
 
-    // Initialize USB Audio Out and USB Host stack
     g_usbAudio.begin();
     usbMidi.begin([](int note, int vel, bool on) {
         engine.handleIncomingMidi(note, vel, on);
     });
 
-    // Draw the full UI before starting the real-time audio task on Core 1
     redrawEntireScreen();
 
-    // Run audio synthesis at priority 5 so it never starves Core 1 UI/touch tasks
     xTaskCreatePinnedToCore(masterAudioTask, "SynthCore1", 8192, nullptr, 2, nullptr, 1);
 }
 
@@ -1392,7 +1476,6 @@ int main(int argc, char *argv[]) {
     });
     midiReader.start();
 
-    BtAudioManager::instance().begin();
     redrawEntireScreen();
     display.show();
 
