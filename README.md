@@ -1,4 +1,4 @@
-# Harmonium & Rythm Box Prototype (ESP32-S3)
+# Harmonium & Rhythm Box Prototype (ESP32-S3)
 
 An open-source digital harmonium and rhythm box currently running on an ESP32-S3 microcontroller with a 7-inch capacitive touchscreen which can also be controlled by attached MIDI keyboard. 
 
