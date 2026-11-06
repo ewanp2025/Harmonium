@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <cstdint>
 #include <algorithm>
 
 #ifndef M_PI_F
@@ -16,7 +17,6 @@
 namespace {
 using Complex = std::complex<float>;
 
-// Fast inline complex multiply without Annex-G NaN/Inf branch overhead
 inline Complex fastComplexMul(const Complex& a, const Complex& b) {
     return Complex(a.real() * b.real() - a.imag() * b.imag(),
                    a.real() * b.imag() + a.imag() * b.real());
@@ -154,9 +154,9 @@ public:
 
 class TransferFunctionFX {
 public:
-    static constexpr int FFT_SIZE  = 512;
-    static constexpr int HOP_SIZE  = 128;
-    static constexpr int HALF_FFT  = FFT_SIZE / 2;
+    static constexpr int FFT_SIZE = 512;
+    static constexpr int HOP_SIZE = 128;
+    static constexpr int HALF_FFT = FFT_SIZE / 2;
 
     static const char* defaultCombinedHarmoniumTf() {
         return "((1 + 0.4 * exp(-(((freq-95)/55)^2)) + 2.5 * exp(-(((freq-320)/100)^2)) + 1.2 * exp(-(((freq-1300)/200)^2))) / sqrt(1 + (freq/7200)^8)) * "
@@ -172,7 +172,7 @@ public:
     void setSampleRate(float sr) {
         m_sr = std::max(8000.0f, sr);
 
-        // 1. Configure Fast Biquad + Comb Path
+        // 1. Configure Fixed-Point Biquads (Q14 coefficients: 16384 = 1.0)
         m_bp95.setBandpass(95.0f, 90.0f, m_sr);
         m_bp320.setBandpass(320.0f, 165.0f, m_sr);
         m_bp1300.setBandpass(1300.0f, 330.0f, m_sr);
@@ -182,7 +182,6 @@ public:
         m_d2 = std::clamp(static_cast<int>(0.0067f * m_sr + 0.5f), 1, COMB_BUF_LEN - 1);
         m_d3 = std::clamp(static_cast<int>(0.0131f * m_sr + 0.5f), 1, COMB_BUF_LEN - 1);
 
-     
         if (!m_formula.empty()) {
             setFormula(m_formula.c_str());
         }
@@ -196,7 +195,6 @@ public:
         }
         enabled = true;
 
-        // Auto-engage zero-latency biquad engine for the default harmonium cabinet model
         if (m_formula == defaultCombinedHarmoniumTf()) {
             m_useFastPath = true;
             resetFastState();
@@ -208,7 +206,6 @@ public:
         parser.setExpression(m_formula);
 
         const float binWidth = m_sr * (1.0f / static_cast<float>(FFT_SIZE));
-        // Pre-fold IFFT (1/N) and WOLA overlap-add gain (2 * HOP / N) into the filter curve
         const float combinedScale = (2.0f * static_cast<float>(HOP_SIZE) / static_cast<float>(FFT_SIZE))
                                   * (1.0f / static_cast<float>(FFT_SIZE));
 
@@ -223,18 +220,57 @@ public:
         resetFftState();
     }
 
-    inline float process(float input) {
-        if (!enabled) return input;
-        return m_useFastPath ? processFast(input) : processFft(input);
+    // Pure 32-bit fixed-point path (inputQ14: 16384 = 1.0)
+    inline int32_t processQ14(int32_t inputQ14) {
+        if (!enabled) return inputQ14;
+        if (!m_useFastPath) {
+            float outF = processFft(static_cast<float>(inputQ14) * (1.0f / 16384.0f));
+            return static_cast<int32_t>(outF * 16384.0f);
+        }
+
+        if (inputQ14 > -2 && inputQ14 < 2) {
+            if (m_silentSamples < FFT_SIZE * 2) {
+                if (++m_silentSamples == FFT_SIZE * 2) {
+                    resetFastState();
+                    return 0;
+                }
+            } else {
+                return 0;
+            }
+        } else {
+            m_silentSamples = 0;
+        }
+
+        const int32_t x = std::clamp<int32_t>(inputQ14, -32768, 32767);
+        const int32_t b1 = m_bp95.processBandpassQ14(x);
+        const int32_t b2 = m_bp320.processBandpassQ14(x);
+        const int32_t b3 = m_bp1300.processBandpassQ14(x);
+
+        // Sum parallel formant branches with pre-folded 0.42 unity gain in Q14:
+        // Dry: 1.0*0.42 = 6881, BP95: 0.4*0.42 = 2753, BP320: 2.5*0.42 = 17203, BP1300: 1.2*0.42 = 8258
+        int32_t eqQ14 = (6881 * x + 2753 * b1 + 17203 * b2 + 8258 * b3) >> 14;
+        eqQ14 = std::clamp<int32_t>(eqQ14, -32768, 32767);
+
+        eqQ14 = m_lp7200.processLowpassQ14(eqQ14);
+        eqQ14 = std::clamp<int32_t>(eqQ14, -32768, 32767);
+
+        m_combBuf[m_combIdx] = static_cast<int16_t>(eqQ14);
+        const int32_t r1 = m_combBuf[(m_combIdx - m_d1) & COMB_MASK];
+        const int32_t r2 = m_combBuf[(m_combIdx - m_d2) & COMB_MASK];
+        const int32_t r3 = m_combBuf[(m_combIdx - m_d3) & COMB_MASK];
+        m_combIdx = (m_combIdx + 1) & COMB_MASK;
+
+        // Early reflections: +0.35*r1 (5734) - 0.22*r2 (3604) + 0.16*r3 (2621) in Q14
+        return eqQ14 + ((5734 * r1 - 3604 * r2 + 2621 * r3) >> 14);
     }
 
-    inline void processBlock(float* buf, int frames) {
-        if (!enabled || !buf || frames <= 0) return;
+    inline float process(float input) {
+        if (!enabled) return input;
         if (m_useFastPath) {
-            for (int i = 0; i < frames; ++i) buf[i] = processFast(buf[i]);
-        } else {
-            for (int i = 0; i < frames; ++i) buf[i] = processFft(buf[i]);
+            int32_t inQ14 = static_cast<int32_t>(input * 16384.0f);
+            return static_cast<float>(processQ14(inQ14)) * (1.0f / 16384.0f);
         }
+        return processFft(input);
     }
 
     bool isUsingFastPath() const { return m_useFastPath; }
@@ -250,12 +286,14 @@ private:
     static constexpr int COMB_BUF_LEN = 512;
     static constexpr int COMB_MASK    = COMB_BUF_LEN - 1;
 
-    struct FastBiquad {
-        float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
-        float a1 = 0.0f, a2 = 0.0f;
-        float z1 = 0.0f, z2 = 0.0f;
+    // Pure 32-bit Fixed-Point Direct Form I Biquad (Q14 coefficients: 16384 = 1.0)
+    struct FixedBiquadQ14 {
+        int32_t b0 = 16384, b1 = 0, b2 = 0;
+        int32_t a1 = 0, a2 = 0;
+        int32_t x1 = 0, x2 = 0;
+        int32_t y1 = 0, y2 = 0;
 
-        void reset() { z1 = 0.0f; z2 = 0.0f; }
+        void reset() { x1 = x2 = y1 = y2 = 0; }
 
         void setBandpass(float f0, float bwHz, float sr) {
             f0 = std::clamp(f0, 20.0f, sr * 0.42f);
@@ -266,11 +304,11 @@ private:
             float alpha = sinW0 / (2.0f * q);
             float invA0 = 1.0f / (1.0f + alpha);
 
-            b0 = alpha * invA0;
-            b1 = 0.0f;
-            b2 = -alpha * invA0;
-            a1 = (-2.0f * cosW0) * invA0;
-            a2 = (1.0f - alpha) * invA0;
+            b0 = static_cast<int32_t>(std::lround((alpha * invA0) * 16384.0f));
+            b1 = 0;
+            b2 = -b0;
+            a1 = static_cast<int32_t>(std::lround(((-2.0f * cosW0) * invA0) * 16384.0f));
+            a2 = static_cast<int32_t>(std::lround(((1.0f - alpha) * invA0) * 16384.0f));
         }
 
         void setLowpass(float f0, float q, float sr) {
@@ -281,23 +319,35 @@ private:
             float alpha = sinW0 / (2.0f * q);
             float invA0 = 1.0f / (1.0f + alpha);
 
-            b1 = (1.0f - cosW0) * invA0;
-            b0 = 0.5f * b1;
+            float fb1 = (1.0f - cosW0) * invA0;
+            float fb0 = 0.5f * fb1;
+            b0 = static_cast<int32_t>(std::lround(fb0 * 16384.0f));
+            b1 = static_cast<int32_t>(std::lround(fb1 * 16384.0f));
             b2 = b0;
-            a1 = (-2.0f * cosW0) * invA0;
-            a2 = (1.0f - alpha) * invA0;
+            a1 = static_cast<int32_t>(std::lround(((-2.0f * cosW0) * invA0) * 16384.0f));
+            a2 = static_cast<int32_t>(std::lround(((1.0f - alpha) * invA0) * 16384.0f));
         }
 
-        inline float process(float x) {
-            float y = b0 * x + z1;
-            z1 = b1 * x - a1 * y + z2;
-            z2 = b2 * x - a2 * y;
+        // Bandpass exploits b1 == 0 and b2 == -b0 (only 3 multiplies!)
+        inline int32_t processBandpassQ14(int32_t x) {
+            int32_t acc = b0 * (x - x2) - a1 * y1 - a2 * y2;
+            int32_t y = std::clamp<int32_t>(acc >> 14, -32768, 32767);
+            x2 = x1; x1 = x;
+            y2 = y1; y1 = y;
+            return y;
+        }
+
+        // Lowpass exploits b0 == b2 (only 4 multiplies!)
+        inline int32_t processLowpassQ14(int32_t x) {
+            int32_t acc = b0 * (x + x2) + b1 * x1 - a1 * y1 - a2 * y2;
+            int32_t y = std::clamp<int32_t>(acc >> 14, -32768, 32767);
+            x2 = x1; x1 = x;
+            y2 = y1; y1 = y;
             return y;
         }
     };
 
     void initTables() {
-        // 9-bit reversal for FFT_SIZE = 512
         for (int i = 0; i < FFT_SIZE; ++i) {
             int rev = 0;
             for (int j = 0; j < 9; ++j) {
@@ -306,13 +356,11 @@ private:
             m_bitRev[i] = static_cast<uint16_t>(rev);
         }
 
-        // Precompute unit-circle twiddles exp(+j * 2 * pi * k / FFT_SIZE)
         for (int k = 0; k < HALF_FFT; ++k) {
             float angle = 2.0f * M_PI_F * static_cast<float>(k) * (1.0f / static_cast<float>(FFT_SIZE));
             m_twiddleLut[k] = Complex(std::cos(angle), std::sin(angle));
         }
 
-        // Root-Hann (Sine) window for dual analysis + synthesis WOLA
         for (int i = 0; i < FFT_SIZE; ++i) {
             m_window[i] = std::sin(M_PI_F * static_cast<float>(i) * (1.0f / static_cast<float>(FFT_SIZE)));
         }
@@ -359,38 +407,6 @@ private:
         m_silentSamples = FFT_SIZE * 2;
     }
 
-    inline float processFast(float input) {
-        if (std::fabs(input) < 1e-6f) {
-            if (m_silentSamples < FFT_SIZE * 2) {
-                if (++m_silentSamples == FFT_SIZE * 2) {
-                    resetFastState();
-                    return 0.0f;
-                }
-            } else {
-                return 0.0f;
-            }
-        } else {
-            m_silentSamples = 0;
-        }
-
-        // Tiny anti-denormal bias prevents FPU subnormal stalls during exponential release
-        const float x = input + 1e-20f;
-        float eq = x
-                 + 0.40f * m_bp95.process(x)
-                 + 2.50f * m_bp320.process(x)
-                 + 1.20f * m_bp1300.process(x);
-
-        eq = m_lp7200.process(eq);
-
-        m_combBuf[m_combIdx] = eq;
-        const float r1 = m_combBuf[(m_combIdx - m_d1) & COMB_MASK];
-        const float r2 = m_combBuf[(m_combIdx - m_d2) & COMB_MASK];
-        const float r3 = m_combBuf[(m_combIdx - m_d3) & COMB_MASK];
-        m_combIdx = (m_combIdx + 1) & COMB_MASK;
-
-        return (eq + 0.35f * r1 - 0.22f * r2 + 0.16f * r3) * 0.42f;
-    }
-
     float processFft(float input) {
         if (std::fabs(input) < 1e-6f) {
             if (m_silentSamples < FFT_SIZE * 2) {
@@ -414,14 +430,12 @@ private:
             std::memmove(m_history, m_history + HOP_SIZE, (FFT_SIZE - HOP_SIZE) * sizeof(float));
             std::memcpy(m_history + (FFT_SIZE - HOP_SIZE), m_inputQueue, HOP_SIZE * sizeof(float));
 
-            // Analysis Root-Hann window
             for (int i = 0; i < FFT_SIZE; ++i) {
                 m_fftBuffer[i] = Complex(m_history[i] * m_window[i], 0.0f);
             }
 
             executeFft(false);
 
-            // Apply pre-scaled complex transfer function H(f)
             for (int i = 0; i <= HALF_FFT; ++i) {
                 m_fftBuffer[i] = fastComplexMul(m_fftBuffer[i], m_filterCurve[i]);
                 if (i > 0 && i < HALF_FFT) {
@@ -431,7 +445,6 @@ private:
 
             executeFft(true);
 
-            // Synthesis Root-Hann window (suppresses circular-convolution wrap artifacts)
             for (int i = 0; i < FFT_SIZE; ++i) {
                 m_overlapAdd[i] += m_fftBuffer[i].real() * m_window[i];
             }
@@ -448,13 +461,13 @@ private:
     std::string m_formula;
     bool m_useFastPath = true;
 
-    // Fast Biquad + Comb State
-    FastBiquad m_bp95, m_bp320, m_bp1300, m_lp7200;
-    float m_combBuf[COMB_BUF_LEN] = {0.0f};
+    // Fixed-Point Fast Path State (int32_t biquads + int16_t comb buffer)
+    FixedBiquadQ14 m_bp95, m_bp320, m_bp1300, m_lp7200;
+    int16_t m_combBuf[COMB_BUF_LEN] = {0};
     int m_combIdx = 0;
     int m_d1 = 44, m_d2 = 148, m_d3 = 289;
 
-    // Contiguous Fixed-Size FFT State (Zero Heap Indirection)
+    // Contiguous FFT State (Fallback for arbitrary transfer function strings)
     int m_hopPos = 0;
     int m_silentSamples = FFT_SIZE * 2;
     uint16_t m_bitRev[FFT_SIZE] = {0};
