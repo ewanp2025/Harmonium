@@ -1,4 +1,4 @@
-# Harmonium & Rhythm Box Prototype (ESP32-S3)
+# Harmonium & Rhythm Box Prototype (ESP32)
 
 An open-source digital harmonium and rhythm box currently running on an ESP32-S3 microcontroller with a 7-inch capacitive touchscreen which can also be controlled by attached MIDI keyboard. 
 
@@ -33,7 +33,7 @@ Because the Waveshare 7-inch development board used for testing and development 
   * BCLK (Bit Clock): GPIO 6
   * LRCK / WS (Word Select): GPIO 16
   * DOUT (Serial Data Out): GPIO 15
-  * Will most likely map this to ESP32-S3-DevKitC-1 N16R8 to DAC or have menu to map.
+  * Can be edited within menu and stored.
      
   Connect an external I2S DAC breakout (such as a PCM5102A for a 3.5 mm jack, or a MAX98357A for a direct speaker) to these pins for clean, zero-latency physical audio output. 
   > **\*\* Please note** that the above (I2s) has not been tested, as I have not wished to break connections on my test board which lacks an array of GPIO pins.
@@ -47,17 +47,16 @@ Because the Waveshare 7-inch development board used for testing and development 
 
 ## Current Limitations
 * **Cabinet Resonance Transfer Function:** The cabinet filter (TransferFunctionFX) simulates the acoustic wooden body of the harmonium using frequency-domain processing. This has been overridden for the harmonium but the functionality is still incorporated incase the effect has to be modified. However the transfer function slows processing down.
-* **Simultaneous USB Audio Out + USB MIDI In:** The ESP32-S3 has a single USB OTG controller. While hot-plugging between a MIDI keyboard and a USB audio dongle is supported, running both simultaneously through a passive hub is limited by the current driver architecture.
-* **Bluetooth Crashes:** As I now have USB Audio working, this could probably be hidden going forward.
+* **Simultaneous USB Audio Out + USB MIDI In:** The ESP32-S3 Waveshare 7 Inch Board has a single USB OTG controller. While hot-plugging between a MIDI keyboard and a USB audio dongle is supported, running both simultaneously through a passive hub is limited by the current driver architecture.
 * **WIFI streaming is too slow and delayed:** As I now have USB Audio working, this could probably be hidden going forward.
-* * **Bellows Can't Be Manually Controlled:** Need to add Auto / Manual Selector for Bellows Amount and Speed
+* * **Bellows Manual Control Not Tested:** I haven't tried connecting a switch.
 * **Board Selection:** Once the firmware is worked on further, the goal is to target a less expensive / cost-effective ESP32-S3 development board such as the following:
   * ESP32-S3-DevKitC-1 N16R8
   * PCM5102A I2S DAC Breakout
   * 2.8" 320×240 ILI9341 or ST7789 SPI Touch Screen
-  * With the code compiling two versions, one for each screen size
+  * I have created a mock up, but I have not been able to test this version.
 * **Singing Voice Synthesis:** Needs to be worked on and is hidden from the main menu for now.
-* **Processing needs to be optimised for non FPU processors:** To convert renderFastHarmoniumSample() and TransferFunctionFX to pure int16_t/int32_t fixed-point math
+
 ## To build
 
 ```bash
