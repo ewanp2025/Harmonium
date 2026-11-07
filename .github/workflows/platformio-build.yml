@@ -1,0 +1,60 @@
+name: PlatformIO CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install PlatformIO
+      run: |
+        python -m pip install --upgrade pip
+        pip install platformio
+
+    - name: Build & Stage Target 1 (Waveshare 7-inch 800x480)
+      run: |
+        pio run -e waveshare_7inch_800x480
+        mkdir -p dist/waveshare_7inch_800x480
+        cp .pio/build/waveshare_7inch_800x480/firmware.bin dist/waveshare_7inch_800x480/firmware.bin
+        cp .pio/build/waveshare_7inch_800x480/partitions.bin dist/waveshare_7inch_800x480/partitions.bin
+        cp .pio/build/waveshare_7inch_800x480/bootloader.bin dist/waveshare_7inch_800x480/bootloader.bin
+        ls -lh dist/waveshare_7inch_800x480/
+
+    - name: Build & Stage Target 2 (DevKit 2.8-inch SPI 320x240)
+      run: |
+        pio run -e devkit_spi_28inch_320x240
+        mkdir -p dist/devkit_spi_28inch_320x240
+        cp .pio/build/devkit_spi_28inch_320x240/firmware.bin dist/devkit_spi_28inch_320x240/firmware.bin
+        cp .pio/build/devkit_spi_28inch_320x240/partitions.bin dist/devkit_spi_28inch_320x240/partitions.bin
+        cp .pio/build/devkit_spi_28inch_320x240/bootloader.bin dist/devkit_spi_28inch_320x240/bootloader.bin
+        ls -lh dist/devkit_spi_28inch_320x240/
+
+    - name: Build & Stage Target 3 (DevKit 2.4-inch ILI9341 + PCM5102)
+      run: |
+        pio run -e devkit_spi_24inch_ili9341_pcm5102
+        mkdir -p dist/devkit_spi_24inch_ili9341_pcm5102
+        cp .pio/build/devkit_spi_24inch_ili9341_pcm5102/firmware.bin dist/devkit_spi_24inch_ili9341_pcm5102/firmware.bin
+        cp .pio/build/devkit_spi_24inch_ili9341_pcm5102/partitions.bin dist/devkit_spi_24inch_ili9341_pcm5102/partitions.bin
+        cp .pio/build/devkit_spi_24inch_ili9341_pcm5102/bootloader.bin dist/devkit_spi_24inch_ili9341_pcm5102/bootloader.bin
+        ls -lh dist/devkit_spi_24inch_ili9341_pcm5102/
+
+    - name: Upload Compiled Firmware Artifact (All 3 Folders)
+      uses: actions/upload-artifact@v4
+      with:
+        name: esp32s3-harmonium-firmwares
+        path: dist/
+        retention-days: 7
