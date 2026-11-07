@@ -1728,6 +1728,8 @@ void setup() {
                          g_display.screenWidth() / 2, g_display.screenHeight() / 2);
 
     engine.init(AUDIO_SRATE);
+    if (!engine.isTrackMuted(20)) engine.toggleTrackMuted(20); // Mute Shankha
+    if (!engine.isTrackMuted(21)) engine.toggleTrackMuted(21); // Mute Shankha 2
     initI2S();
 
     g_usbAudio.begin();
