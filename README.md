@@ -50,11 +50,11 @@ Because the Waveshare 7-inch development board used for testing and development 
 * **Simultaneous USB Audio Out + USB MIDI In:** The ESP32-S3 Waveshare 7 Inch Board has a single USB OTG controller. While hot-plugging between a MIDI keyboard and a USB audio dongle is supported, running both simultaneously through a passive hub is limited by the current driver architecture.
 * **WIFI streaming is too slow and delayed:** As I now have USB Audio working, this could probably be hidden going forward.
 * * **Bellows Manual Control Not Tested:** I haven't tried connecting a switch.
-* **Board Selection:** Once the firmware is worked on further, the goal is to target a less expensive / cost-effective ESP32-S3 development board such as the following:
-  * ESP32-S3-DevKitC-1 N16R8
+* **Board Selection:** Once the firmware is worked on further, the goal is to test on a less expensive / cost-effective ESP32-S3 development board such as the following which I have ordered:
+  * ESP32-S3-DevKitC-1 8MB PSRAM 16MB FLASH N16R8 44Pin CP2102 Type-C ESP32S3
   * PCM5102A I2S DAC Breakout
-  * 2.8" 320×240 ILI9341 or ST7789 SPI Touch Screen
-  * I have created a mock up, but I have not been able to test this version.
+  * 240x320 2.4" SPI TFT LCD Touch Panel ILI9341
+  * I have created a mock up, but I have not been able to test this version as the parts are in the mail.
 * **Singing Voice Synthesis:** Needs to be worked on and is hidden from the main menu for now.
 
 ## To build
