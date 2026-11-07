@@ -12,6 +12,7 @@
 
 #ifdef ESP32
 #include <Arduino.h>
+#include <Wire.h>
 #include <driver/i2s.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -21,9 +22,21 @@
 #include "usb_audio.h"
 #include "wifi_stream.h"
 
+#ifndef I2S_BCLK_PIN
 #define I2S_BCLK_PIN  6
+#endif
+#ifndef I2S_DOUT_PIN
 #define I2S_DOUT_PIN  15
+#endif
+#ifndef I2S_LRCK_PIN
 #define I2S_LRCK_PIN  16
+#endif
+#ifndef I2C_SDA_PIN
+#define I2C_SDA_PIN   8
+#endif
+#ifndef I2C_SCL_PIN
+#define I2C_SCL_PIN   9
+#endif
 #define AUDIO_SRATE   22050
 
 static Waveshare7Display g_display;
@@ -80,6 +93,15 @@ struct BoardGpioConfig {
     int belPosPin = -1; // -1 = OFF, or ADC GPIO pin
     int belDepPin = -1; // -1 = derive pumping speed from POS pin, or 2nd ADC GPIO pin
 };
+struct BoardGpioConfig {
+    int i2sBclk   = I2S_BCLK_PIN;
+    int i2sLrck   = I2S_LRCK_PIN;
+    int i2sDout   = I2S_DOUT_PIN;
+    int i2cSda    = I2C_SDA_PIN;
+    int i2cScl    = I2C_SCL_PIN;
+    int belPosPin = -1; // -1 = OFF, or ADC GPIO pin
+    int belDepPin = -1; // -1 = derive pumping speed from POS pin, or 2nd ADC GPIO pin
+};
 static BoardGpioConfig g_pins;
 static float g_prevPosNorm = 0.5f;
 static float g_smoothedVelDep = 0.8f;
@@ -95,6 +117,15 @@ static void applyI2SPins() {
 #endif
 }
 
+static void applyI2CPins() {
+#if defined(ESP32) && (SCREEN_PROFILE != 0)
+    if (g_pins.i2cSda >= 0 && g_pins.i2cScl >= 0) {
+        Wire.end();
+        Wire.begin(g_pins.i2cSda, g_pins.i2cScl, 400000);
+    }
+#endif
+}
+
 static void saveGpioConfig() {
 #ifdef ESP32
     File f = LittleFS.open("/gpio_cfg.json", "w");
@@ -103,6 +134,8 @@ static void saveGpioConfig() {
         doc["bclk"]   = g_pins.i2sBclk;
         doc["lrck"]   = g_pins.i2sLrck;
         doc["dout"]   = g_pins.i2sDout;
+        doc["sda"]    = g_pins.i2cSda;
+        doc["scl"]    = g_pins.i2cScl;
         doc["belPos"] = g_pins.belPosPin;
         doc["belDep"] = g_pins.belDepPin;
         serializeJson(doc, f);
@@ -112,6 +145,7 @@ static void saveGpioConfig() {
     if (g_pins.belDepPin >= 0) pinMode(g_pins.belDepPin, INPUT);
 #endif
     applyI2SPins();
+    applyI2CPins();
 }
 
 static void loadGpioConfig() {
@@ -123,6 +157,8 @@ static void loadGpioConfig() {
         g_pins.i2sBclk   = doc["bclk"]   | I2S_BCLK_PIN;
         g_pins.i2sLrck   = doc["lrck"]   | I2S_LRCK_PIN;
         g_pins.i2sDout   = doc["dout"]   | I2S_DOUT_PIN;
+        g_pins.i2cSda    = doc["sda"]    | I2C_SDA_PIN;
+        g_pins.i2cScl    = doc["scl"]    | I2C_SCL_PIN;
         g_pins.belPosPin = doc["belPos"] | -1;
         g_pins.belDepPin = doc["belDep"] | -1;
     }
@@ -1071,28 +1107,36 @@ static void drawGpioModal() {
     g_tft->drawRect(padX, padY, mw, mh, rgb565(0, 229, 255));
     g_tft->setTextColor(rgb565(255, 202, 40), rgb565(15, 20, 25));
     g_tft->setTextDatum(MC_DATUM);
-    g_tft->drawString(u.compactLabels ? "GPIO & I2S DAC PIN SETUP" : "BOARD GPIO & I2S AUDIO DAC PIN SETUP",
-                      u.scrW / 2, padY + (u.compactLabels ? 10 : 24));
+    g_tft->drawString(u.compactLabels ? "I2S, I2C & GPIO PIN SETUP" : "BOARD GPIO, I2S DAC & I2C PIN SETUP",
+                      u.scrW / 2, padY + (u.compactLabels ? 9 : 22));
 
-    const char* labelsFull[5] = {
+    const char* labelsFull[7] = {
         "I2S Audio BCLK (Bit Clock):",
         "I2S Audio LRCK / WS (Word Sel):",
         "I2S Audio DOUT (Data Out):",
+        "I2C Bus SDA (Data Pin):",
+        "I2C Bus SCL (Clock Pin):",
         "Bellows POS (Position ADC Pin):",
         "Bellows DEP (Depth/Press Pin):"
     };
-    const char* labelsShort[5] = {
+    const char* labelsShort[7] = {
         "I2S BCLK:",
         "I2S LRCK:",
         "I2S DOUT:",
+        "I2C SDA:",
+        "I2C SCL:",
         "Bel POS:",
         "Bel DEP:"
     };
-    int vals[5] = {g_pins.i2sBclk, g_pins.i2sLrck, g_pins.i2sDout, g_pins.belPosPin, g_pins.belDepPin};
+    int vals[7] = {
+        g_pins.i2sBclk, g_pins.i2sLrck, g_pins.i2sDout,
+        g_pins.i2cSda,  g_pins.i2cScl,
+        g_pins.belPosPin, g_pins.belDepPin
+    };
 
-    int startY = padY + (u.compactLabels ? 22 : 60);
-    int stepY  = u.compactLabels ? 30 : 52;
-    int rowH   = u.compactLabels ? 24 : 36;
+    int startY = padY + (u.compactLabels ? 18 : 46);
+    int stepY  = u.compactLabels ? 23 : 40;
+    int rowH   = u.compactLabels ? 19 : 30;
     int lblX   = padX + (u.compactLabels ? 8 : 30);
     int minusX = u.compactLabels ? 140 : 430;
     int minusW = u.compactLabels ? 32  : 56;
@@ -1100,7 +1144,7 @@ static void drawGpioModal() {
     int valW   = u.compactLabels ? 96  : 110;
     int plusX  = u.compactLabels ? 276 : 612;
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 7; ++i) {
         int ry = startY + i * stepY;
         g_tft->setTextColor(0xFFFF, rgb565(15, 20, 25));
         g_tft->setTextDatum(ML_DATUM);
@@ -1111,7 +1155,7 @@ static void drawGpioModal() {
         TouchButton btnPlus  = {plusX,  ry, minusW, rowH};
 
         char vBuf[24];
-        if (vals[i] < 0) std::snprintf(vBuf, sizeof(vBuf), (i == 4) ? "AUTO SPD" : "OFF (-1)");
+        if (vals[i] < 0) std::snprintf(vBuf, sizeof(vBuf), (i == 6) ? "AUTO SPD" : "OFF (-1)");
         else             std::snprintf(vBuf, sizeof(vBuf), "GPIO %d", vals[i]);
 
         drawButton(btnMinus, "-", rgb565(55, 71, 79));
@@ -1119,8 +1163,8 @@ static void drawGpioModal() {
         drawButton(btnPlus, "+", rgb565(55, 71, 79));
     }
 
-    int botY = u.compactLabels ? (u.scrH - 32) : 380;
-    int botH = u.compactLabels ? 24 : 42;
+    int botY = u.compactLabels ? (u.scrH - 32) : 385;
+    int botH = u.compactLabels ? 24 : 40;
     int botW = u.compactLabels ? 110 : 160;
     drawButton({u.scrW / 2 - botW - 10, botY, botW, botH}, "SAVE & APPLY", rgb565(46, 125, 50));
     drawButton({u.scrW / 2 + 10,        botY, botW, botH}, "CLOSE",        rgb565(183, 28, 28));
@@ -1183,17 +1227,21 @@ static void esp32LoopTick() {
     bool touching = g_tft->getTouch(&tx, &ty);
 
     if (touching && !wasTouching) {
-        if (g_modalState == MODAL_GPIO_CFG) {
+if (g_modalState == MODAL_GPIO_CFG) {
             int padY   = u.compactLabels ? 24 : 44;
-            int startY = padY + (u.compactLabels ? 22 : 60);
-            int stepY  = u.compactLabels ? 30 : 52;
-            int rowH   = u.compactLabels ? 24 : 36;
+            int startY = padY + (u.compactLabels ? 18 : 46);
+            int stepY  = u.compactLabels ? 23 : 40;
+            int rowH   = u.compactLabels ? 19 : 30;
             int minusX = u.compactLabels ? 140 : 430;
             int minusW = u.compactLabels ? 32  : 56;
             int plusX  = u.compactLabels ? 276 : 612;
 
-            int* pinPtrs[5] = {&g_pins.i2sBclk, &g_pins.i2sLrck, &g_pins.i2sDout, &g_pins.belPosPin, &g_pins.belDepPin};
-            for (int i = 0; i < 5; ++i) {
+            int* pinPtrs[7] = {
+                &g_pins.i2sBclk, &g_pins.i2sLrck, &g_pins.i2sDout,
+                &g_pins.i2cSda,  &g_pins.i2cScl,
+                &g_pins.belPosPin, &g_pins.belDepPin
+            };
+            for (int i = 0; i < 7; ++i) {
                 int ry = startY + i * stepY;
                 int minPin = (i >= 3) ? -1 : 0;
                 if (hitBox({minusX, ry, minusW, rowH}, tx, ty)) {
@@ -1203,8 +1251,8 @@ static void esp32LoopTick() {
                 }
             }
 
-            int botY = u.compactLabels ? (u.scrH - 32) : 380;
-            int botH = u.compactLabels ? 24 : 42;
+            int botY = u.compactLabels ? (u.scrH - 32) : 385;
+            int botH = u.compactLabels ? 24 : 40;
             int botW = u.compactLabels ? 110 : 160;
             if (hitBox({u.scrW / 2 - botW - 10, botY, botW, botH}, tx, ty)) {
                 saveGpioConfig();
@@ -1709,6 +1757,7 @@ void setup() {
     Serial.begin(115200);
     initFileSystem();
     loadGpioConfig();
+    applyI2CPins();
 
     int dummyTala = 0, dummySong = 0;
     loadBankFromFile("/Default_Bank.mhb", dummyTala, dummySong);
