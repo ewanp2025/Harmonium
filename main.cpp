@@ -57,6 +57,8 @@ static UsbAudioOut g_usbAudio;
 #define I2S_BCLK_PIN  6
 #define I2S_DOUT_PIN  15
 #define I2S_LRCK_PIN  16
+#define I2C_SDA_PIN   8
+#define I2C_SCL_PIN   9
 #define AUDIO_SRATE   22050
 
 static Waveshare7QtDisplay* g_tft = nullptr;
@@ -86,13 +88,7 @@ static std::vector<std::string> g_fileList;
 static std::string g_kbdInput;
 static int g_audioOutMode = 1; // 0 = USB, 1 = I2S, 2 = WIFI
 
-struct BoardGpioConfig {
-    int i2sBclk   = I2S_BCLK_PIN;
-    int i2sLrck   = I2S_LRCK_PIN;
-    int i2sDout   = I2S_DOUT_PIN;
-    int belPosPin = -1; // -1 = OFF, or ADC GPIO pin
-    int belDepPin = -1; // -1 = derive pumping speed from POS pin, or 2nd ADC GPIO pin
-};
+
 struct BoardGpioConfig {
     int i2sBclk   = I2S_BCLK_PIN;
     int i2sLrck   = I2S_LRCK_PIN;
