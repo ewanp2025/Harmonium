@@ -109,7 +109,7 @@ inline bool loadBankFromFile(const char* filename, int& outTalaIdx, int& outSong
     }
 
     auto& activeSongs = const_cast<std::vector<HarmoniumSong>&>(BuiltInPresets::getHarmoniumSongs());
-    if (doc.containsKey("harmoniumSongs")) {
+    if (doc["harmoniumSongs"].is<JsonArray>()) {
         activeSongs.clear();
         for (JsonObject obj : doc["harmoniumSongs"].as<JsonArray>()) {
             HarmoniumSong s;
