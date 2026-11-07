@@ -25,21 +25,23 @@ jobs:
         python -m pip install --upgrade pip
         pip install platformio
 
-    - name: Compile Both ESP32-S3 Targets
+    - name: Build & Stage Target 1 (Waveshare 7-inch 800x480)
       run: |
         pio run -e waveshare_7inch_800x480
-        pio run -e devkit_spi_28inch_320x240
-
-    - name: Organize Output Folders with Identical Binary Names
-      run: |
         mkdir -p dist/waveshare_7inch_800x480
-        mkdir -p dist/devkit_spi_28inch_320x240
         cp .pio/build/waveshare_7inch_800x480/firmware.bin dist/waveshare_7inch_800x480/firmware.bin
         cp .pio/build/waveshare_7inch_800x480/partitions.bin dist/waveshare_7inch_800x480/partitions.bin
         cp .pio/build/waveshare_7inch_800x480/bootloader.bin dist/waveshare_7inch_800x480/bootloader.bin
+        ls -lh dist/waveshare_7inch_800x480/
+
+    - name: Build & Stage Target 2 (DevKit 2.8-inch SPI 320x240)
+      run: |
+        pio run -e devkit_spi_28inch_320x240
+        mkdir -p dist/devkit_spi_28inch_320x240
         cp .pio/build/devkit_spi_28inch_320x240/firmware.bin dist/devkit_spi_28inch_320x240/firmware.bin
         cp .pio/build/devkit_spi_28inch_320x240/partitions.bin dist/devkit_spi_28inch_320x240/partitions.bin
         cp .pio/build/devkit_spi_28inch_320x240/bootloader.bin dist/devkit_spi_28inch_320x240/bootloader.bin
+        ls -lh dist/devkit_spi_28inch_320x240/
 
     - name: Upload Compiled Firmware Artifact (Both Folders)
       uses: actions/upload-artifact@v4
