@@ -41,6 +41,11 @@ static UsbAudioOut g_usbAudio;
 #include "display_driver_qt.h"
 #include "midireader.h"
 
+#define I2S_BCLK_PIN  6
+#define I2S_DOUT_PIN  15
+#define I2S_LRCK_PIN  16
+#define AUDIO_SRATE   22050
+
 static Waveshare7QtDisplay* g_tft = nullptr;
 
 inline void initFileSystem() {}
