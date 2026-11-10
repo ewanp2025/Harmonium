@@ -33,7 +33,8 @@ public:
 private:
     NoteCallback m_cb;
     usb_host_client_handle_t m_clientHdl = nullptr;
-    usb_device_handle_t m_devHdl = nullptr;
+    usb_device_handle_t m_midiDevHdl = nullptr;
+    usb_device_handle_t m_audioDevHdl = nullptr;
     usb_transfer_t* m_inXfer = nullptr;
     int m_claimedIface = -1;
     volatile bool m_connected = false;
@@ -82,78 +83,93 @@ private:
                 }
             }
         }
-        if (self->m_connected && self->m_devHdl) {
+        if (self->m_connected && self->m_midiDevHdl) {
             usb_host_transfer_submit(xfer);
         }
     }
 
-    static void clientEventCallback(const usb_host_client_event_msg_t* eventMsg, void* arg) {
+static void clientEventCallback(const usb_host_client_event_msg_t* eventMsg, void* arg) {
         auto* self = static_cast<UsbMidiHost*>(arg);
         if (eventMsg->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
-            if (usb_host_device_open(self->m_clientHdl, eventMsg->new_dev.address, &self->m_devHdl) != ESP_OK) return;
+            usb_device_handle_t newDevHdl = nullptr;
+            if (usb_host_device_open(self->m_clientHdl, eventMsg->new_dev.address, &newDevHdl) != ESP_OK) return;
 
             const usb_config_desc_t* configDesc = nullptr;
-            if (usb_host_get_active_config_descriptor(self->m_devHdl, &configDesc) != ESP_OK) return;
-
-            // Only attempt USB Audio Out if the user has switched BTN_AUDIO to USB Audio mode
-            self->m_audioClaimed = false;
-            if (UsbAudioPartner::s_enableUsbAudio && UsbAudioPartner::s_instance) {
-                self->m_audioClaimed = UsbAudioPartner::s_instance->tryClaimAudioInterface(
-                    self->m_clientHdl, self->m_devHdl, configDesc);
-                if (self->m_audioClaimed) return;
+            if (usb_host_get_active_config_descriptor(newDevHdl, &configDesc) != ESP_OK) {
+                usb_host_device_close(self->m_clientHdl, newDevHdl);
+                return;
             }
 
-          
-            int offset = 0;
-            int curIface = -1;
-            const uint8_t* p = reinterpret_cast<const uint8_t*>(configDesc);
-            while (offset < configDesc->wTotalLength) {
-                uint8_t len = p[offset];
-                uint8_t type = p[offset + 1];
-                if (len == 0) break;
 
-                if (type == USB_B_DESCRIPTOR_TYPE_INTERFACE) {
-                    auto* ifc = reinterpret_cast<const usb_intf_desc_t*>(&p[offset]);
-                    curIface = ifc->bInterfaceNumber;
-                } else if (type == USB_B_DESCRIPTOR_TYPE_ENDPOINT && curIface >= 0) {
-                    auto* ep = reinterpret_cast<const usb_ep_desc_t*>(&p[offset]);
-                    bool isIn = (ep->bEndpointAddress & 0x80) != 0;
-                    uint8_t xferType = ep->bmAttributes & 0x03;
-                    if (isIn && (xferType == USB_BM_ATTRIBUTES_XFER_BULK || xferType == USB_BM_ATTRIBUTES_XFER_INT)) {
-                        if (usb_host_interface_claim(self->m_clientHdl, self->m_devHdl, curIface, 0) == ESP_OK) {
-                            self->m_claimedIface = curIface;
-                            uint16_t mps = ep->wMaxPacketSize & 0x7FF;
-                            usb_host_transfer_alloc(mps, 0, &self->m_inXfer);
-                            self->m_inXfer->device_handle = self->m_devHdl;
-                            self->m_inXfer->bEndpointAddress = ep->bEndpointAddress;
-                            self->m_inXfer->callback = onMidiTransfer;
-                            self->m_inXfer->context = self;
-                            self->m_inXfer->num_bytes = mps;
-                            self->m_connected = true;
-                            usb_host_transfer_submit(self->m_inXfer);
-                            break;
+            if (UsbAudioPartner::s_enableUsbAudio && UsbAudioPartner::s_instance && !self->m_audioDevHdl) {
+                if (UsbAudioPartner::s_instance->tryClaimAudioInterface(self->m_clientHdl, newDevHdl, configDesc)) {
+                    self->m_audioDevHdl = newDevHdl;
+                    return;
+                }
+            }
+
+       
+            if (!self->m_midiDevHdl) {
+                int offset = 0;
+                int curIface = -1;
+                const uint8_t* p = reinterpret_cast<const uint8_t*>(configDesc);
+                while (offset < configDesc->wTotalLength) {
+                    uint8_t len = p[offset];
+                    uint8_t type = p[offset + 1];
+                    if (len == 0) break;
+
+                    if (type == USB_B_DESCRIPTOR_TYPE_INTERFACE) {
+                        auto* ifc = reinterpret_cast<const usb_intf_desc_t*>(&p[offset]);
+                        curIface = ifc->bInterfaceNumber;
+                    } else if (type == USB_B_DESCRIPTOR_TYPE_ENDPOINT && curIface >= 0) {
+                        auto* ep = reinterpret_cast<const usb_ep_desc_t*>(&p[offset]);
+                        bool isIn = (ep->bEndpointAddress & 0x80) != 0;
+                        uint8_t xferType = ep->bmAttributes & 0x03;
+                        if (isIn && (xferType == USB_BM_ATTRIBUTES_XFER_BULK || xferType == USB_BM_ATTRIBUTES_XFER_INT)) {
+                            if (usb_host_interface_claim(self->m_clientHdl, newDevHdl, curIface, 0) == ESP_OK) {
+                                self->m_midiDevHdl = newDevHdl;
+                                self->m_claimedIface = curIface;
+                                uint16_t mps = ep->wMaxPacketSize & 0x7FF;
+                                usb_host_transfer_alloc(mps, 0, &self->m_inXfer);
+                                self->m_inXfer->device_handle = self->m_midiDevHdl;
+                                self->m_inXfer->bEndpointAddress = ep->bEndpointAddress;
+                                self->m_inXfer->callback = onMidiTransfer;
+                                self->m_inXfer->context = self;
+                                self->m_inXfer->num_bytes = mps;
+                                self->m_connected = true;
+                                usb_host_transfer_submit(self->m_inXfer);
+                                return;
+                            }
                         }
                     }
+                    offset += len;
                 }
-                offset += len;
             }
+
+            // Neither claimed: close handle cleanly
+            usb_host_device_close(self->m_clientHdl, newDevHdl);
+
         } else if (eventMsg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
-            self->m_connected = false;
-            if (self->m_inXfer) {
-                usb_host_transfer_free(self->m_inXfer);
-                self->m_inXfer = nullptr;
-            }
-            if (self->m_devHdl) {
-                if (self->m_audioClaimed && UsbAudioPartner::s_instance) {
-                    UsbAudioPartner::s_instance->onDeviceDisconnected(self->m_clientHdl, self->m_devHdl);
-                    self->m_audioClaimed = false;
+            usb_device_handle_t goneHdl = eventMsg->dev_gone.dev_hdl;
+
+            if (goneHdl == self->m_audioDevHdl) {
+                if (UsbAudioPartner::s_instance) {
+                    UsbAudioPartner::s_instance->onDeviceDisconnected(self->m_clientHdl, self->m_audioDevHdl);
+                }
+                usb_host_device_close(self->m_clientHdl, self->m_audioDevHdl);
+                self->m_audioDevHdl = nullptr;
+            } else if (goneHdl == self->m_midiDevHdl) {
+                self->m_connected = false;
+                if (self->m_inXfer) {
+                    usb_host_transfer_free(self->m_inXfer);
+                    self->m_inXfer = nullptr;
                 }
                 if (self->m_claimedIface >= 0) {
-                    usb_host_interface_release(self->m_clientHdl, self->m_devHdl, self->m_claimedIface);
+                    usb_host_interface_release(self->m_clientHdl, self->m_midiDevHdl, self->m_claimedIface);
                     self->m_claimedIface = -1;
                 }
-                usb_host_device_close(self->m_clientHdl, self->m_devHdl);
-                self->m_devHdl = nullptr;
+                usb_host_device_close(self->m_clientHdl, self->m_midiDevHdl);
+                self->m_midiDevHdl = nullptr;
             }
         }
     }
