@@ -56,6 +56,7 @@ Because the Waveshare 7-inch development board used for testing and development 
   * 240x320 2.4" SPI TFT LCD Touch Panel ILI9341
   * I have created a mock up, but I have not been able to test this version as the parts are in the mail.
 * **Singing Voice Synthesis:** Needs to be worked on and is hidden from the main menu for now.
+* **USB Audio Must Be Plugged in Last:** When using USB Audio out, such as on the Waveshare 7" development board, both usb devices must be plugged into a hub on the 'USB' labelled USB port. The midi keyboard can be attached immediately. However, the user must select USB audio out before plugging in the USB audio otherwise the HID audio buttons will take the MIDI slot.
 
 ## To build
 
