@@ -64,9 +64,12 @@ public:
         }
     }
 
-    bool tryClaimAudioInterface(usb_host_client_handle_t clientHdl,
+bool tryClaimAudioInterface(usb_host_client_handle_t clientHdl,
                                 usb_device_handle_t devHdl,
                                 const usb_config_desc_t* configDesc) override {
+                if (m_connected && m_devHdl != nullptr) {
+            return false;
+        }
         AltCandidate cands[12];
         int numCands = 0;
         int curCand = -1;
