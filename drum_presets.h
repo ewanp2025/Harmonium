@@ -13,8 +13,8 @@ struct SongNote {
     int lenTicks;
     int key;
     float vol;
-    float a1;
-    float a2;
+    float a1; 
+    float a2; 
     float a3;
 
     SongNote(int s = 0, int l = 48, int k = 69, float v = 1.0f,
@@ -30,7 +30,6 @@ struct TrackSpec {
     const char* o2Str;
     bool useAdsr;
     float dec, sus, rel;
-    const char* tfStr = "";
 };
 
 struct TalaTheka {
@@ -68,6 +67,7 @@ inline const char* defaultHarmoniumO1() {
 }
 
 inline const char* defaultSingingVoiceO1() {
+
     return "exp(-trel * 16) * ( 0.7 * ( "
            "exp(-251.3 * (mod(integrate(f * (1 - 0.025 * exp(-20 * t) + 0.008 * (1 - exp(-4 * t)) * sinew(5.5 * t))), 1) / f)) * "
            "sinew((0.8 + 0.4 * A3) * (800 - 270 * clamp(0, 4 * A1, 1) - 260 * clamp(0, 4 * A1 - 1, 1) + 230 * clamp(0, 4 * A1 - 2, 1) - 200 * clamp(0, 4 * A1 - 3, 1)) * (mod(integrate(f * (1 - 0.025 * exp(-20 * t) + 0.008 * (1 - exp(-4 * t)) * sinew(5.5 * t))), 1) / f)) "
@@ -99,196 +99,88 @@ inline const char* tanpuraDroneO2() {
            "0.4*saww(integrate(f))*exp(-mod(t*tempo/120 + 0.5, 1)*2.2)) * min(1, t*20) * ((1 - rel) + rel*exp(-trel*3))";
 }
 
-// Acoustic Transfer Functions for Percussion & Conch Shells
-inline const char* tfTablaBayaCombo() {
-    // Copper Bayan pot Helmholtz sub-resonance (88 Hz) + Sheesham wood Dayan shell (310 Hz) + Syahi ring (780 Hz & 1650 Hz) + studio early reflections
-    return "((1 + 1.85 * exp(-(((freq-88)/38)^2)) + 1.45 * exp(-(((freq-310)/85)^2)) + 1.35 * exp(-(((freq-780)/180)^2)) + 0.85 * exp(-(((freq-1650)/350)^2))) / sqrt(1 + (freq/5800)^6)) * "
-           "(1 + 0.28 * exp(-j * 2 * pi * freq * 0.0029) - 0.18 * exp(-j * 2 * pi * freq * 0.0073) + 0.12 * exp(-j * 2 * pi * freq * 0.0141))";
-}
-
-inline const char* tfBayaGumki() {
-    // Deep Bayan clay/copper pot cavity (76 Hz & 152 Hz) with warm low-mid body and smooth skin roll-off
-    return "((1 + 2.20 * exp(-(((freq-76)/32)^2)) + 1.50 * exp(-(((freq-155)/55)^2)) + 0.70 * exp(-(((freq-420)/120)^2))) / sqrt(1 + (freq/2600)^6)) * "
-           "(1 + 0.32 * exp(-j * 2 * pi * freq * 0.0038) - 0.19 * exp(-j * 2 * pi * freq * 0.0091))";
-}
-
-inline const char* tfDayaCrisp() {
-    // Crisp Dayan wooden shell & Syahi harmonic clarity (290 Hz, 620 Hz, 1450 Hz, 2800 Hz skin snap)
-    return "((1 + 1.40 * exp(-(((freq-295)/75)^2)) + 1.65 * exp(-(((freq-620)/140)^2)) + 1.30 * exp(-(((freq-1480)/300)^2)) + 0.75 * exp(-(((freq-2850)/500)^2))) / sqrt(1 + (freq/6800)^6)) * "
-           "(1 + 0.24 * exp(-j * 2 * pi * freq * 0.0021) - 0.15 * exp(-j * 2 * pi * freq * 0.0061))";
-}
-
-inline const char* tfDrySkinSlap() {
-    // Flat palm / finger slap (Ka, Ti, Re, Ra, Ki) - woody mid-punch (240 Hz & 820 Hz) + crisp leather transient (2100 Hz)
-    return "((1 + 1.35 * exp(-(((freq-240)/70)^2)) + 1.50 * exp(-(((freq-820)/190)^2)) + 1.15 * exp(-(((freq-2100)/450)^2))) / sqrt(1 + (freq/5400)^6)) * "
-           "(1 + 0.22 * exp(-j * 2 * pi * freq * 0.0018) - 0.14 * exp(-j * 2 * pi * freq * 0.0053))";
-}
-
-inline const char* tfKholBody() {
-    // Terracotta conical Mridanga/Khol resonator (95 Hz bass end, 390 Hz clay cavity, 1560 Hz Gub/Syahi ring)
-    return "((1 + 1.90 * exp(-(((freq-95)/42)^2)) + 1.60 * exp(-(((freq-390)/95)^2)) + 1.45 * exp(-(((freq-1560)/260)^2))) / sqrt(1 + (freq/6000)^6)) * "
-           "(1 + 0.30 * exp(-j * 2 * pi * freq * 0.0033) - 0.20 * exp(-j * 2 * pi * freq * 0.0084) + 0.14 * exp(-j * 2 * pi * freq * 0.0157))";
-}
-
-inline const char* tfBronzeCymbal() {
-    // Cast Kansa/Bronze idiophone shimmer (Kartal, Manjira, Ghanta, Kansa) - modal brilliance + metallic micro-reflections
-    return "((1 + 1.25 * exp(-(((freq-1150)/250)^2)) + 1.65 * exp(-(((freq-3150)/450)^2)) + 1.55 * exp(-(((freq-5200)/700)^2)) + 1.20 * exp(-(((freq-7400)/900)^2))) / sqrt(1 + (freq/9800)^8)) * "
-           "(1 + 0.38 * exp(-j * 2 * pi * freq * 0.0014) - 0.26 * exp(-j * 2 * pi * freq * 0.0039) + 0.19 * exp(-j * 2 * pi * freq * 0.0087))";
-}
-
-inline const char* tfShankhaConch() {
-    // Turbinella pyrum spiral conch shell acoustic cavity formants (520 Hz, 1040 Hz, 1580 Hz) + temple hall reflections
-    return "((0.6 + 2.40 * exp(-(((freq-520)/75)^2)) + 1.85 * exp(-(((freq-1040)/110)^2)) + 1.25 * exp(-(((freq-1580)/160)^2))) / sqrt(1 + (freq/3800)^8)) * "
-           "(1 + 0.42 * exp(-j * 2 * pi * freq * 0.0047) - 0.28 * exp(-j * 2 * pi * freq * 0.0113) + 0.22 * exp(-j * 2 * pi * freq * 0.0197))";
-}
-
 inline const std::vector<TrackSpec>& getTracks() {
     static const std::vector<TrackSpec> tracks = {
         {"Dha", true, false,
-         "0.68 * exp(-4.2 * t) * sin(6.28318 * (78 * t + 1.35 * (1 - exp(-18 * t)) - 0.55 * (1 - exp(-5.5 * t)))) + "
-         "0.22 * exp(-9.5 * t) * sin(6.28318 * (156 * t + 1.8 * (1 - exp(-18 * t)))) + "
-         "0.34 * exp(-9.0 * t) * (sin(6.28318 * (f * 0.5946 * t - 0.14 * exp(-45 * t))) + 0.45 * sin(6.28318 * (f * 0.5946 + 2.8) * t)) + "
-         "0.26 * exp(-11.0 * t) * sin(6.28318 * f * 1.1892 * t) + "
-         "0.22 * exp(-95 * t) * (sin(6.28318 * 1850 * t) + 0.5 * randv(t * srate) * sin(6.28318 * 1100 * t))",
-         "0.42 * exp(-4.2 * t) * sin(6.28318 * (78 * t + 1.35 * (1 - exp(-18 * t)) - 0.55 * (1 - exp(-5.5 * t)))) + "
-         "0.48 * exp(-8.5 * t) * sin(6.28318 * (f * 0.5946 * t - 0.14 * exp(-45 * t))) + "
-         "0.38 * exp(-11.5 * t) * (sin(6.28318 * f * 1.1892 * t) + 0.4 * sin(6.28318 * (f * 1.1892 + 3.4) * t)) + "
-         "0.20 * exp(-18.0 * t) * sin(6.28318 * f * 1.7838 * t) + "
-         "0.25 * exp(-90 * t) * sin(6.28318 * 2400 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfTablaBayaCombo()},
+         "0.65 * exp(-5 * t) * sin(2 * pi * (f * 0.2973 * t - 0.6 * exp(-25 * t))) + 0.2 * exp(-14 * t) * sin(2 * pi * f * 0.5946 * t) + 0.2 * exp(-10 * t) * sin(2 * pi * f * 1.1892 * t) + 0.15 * exp(-75 * t) * sin(2 * pi * 1800 * t)",
+         "0.35 * exp(-5 * t) * sin(2 * pi * (f * 0.2973 * t - 0.6 * exp(-25 * t))) + 0.45 * exp(-10 * t) * sin(2 * pi * (f * 0.5946 * t - 0.12 * exp(-40 * t))) + 0.3 * exp(-14 * t) * sin(2 * pi * f * 1.1892 * t) + 0.25 * exp(-75 * t) * sin(2 * pi * 1800 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Dhin", true, false,
-         "0.66 * exp(-3.8 * t) * sin(6.28318 * (82 * t + 1.45 * (1 - exp(-16 * t)) - 0.65 * (1 - exp(-4.8 * t)))) + "
-         "0.26 * exp(-8.0 * t) * sin(6.28318 * (164 * t + 2.0 * (1 - exp(-16 * t)))) + "
-         "0.38 * exp(-5.8 * t) * (sin(6.28318 * (f * 0.5946 * t - 0.10 * exp(-35 * t))) + 0.5 * sin(6.28318 * (f * 0.5946 + 2.2) * t)) + "
-         "0.24 * exp(-7.5 * t) * sin(6.28318 * f * 1.1892 * t) + "
-         "0.16 * exp(-85 * t) * randv(t * srate) * sin(6.28318 * 920 * t)",
-         "0.38 * exp(-3.8 * t) * sin(6.28318 * (82 * t + 1.45 * (1 - exp(-16 * t)) - 0.65 * (1 - exp(-4.8 * t)))) + "
-         "0.52 * exp(-5.5 * t) * sin(6.28318 * (f * 0.5946 * t - 0.08 * exp(-35 * t))) + "
-         "0.38 * exp(-7.5 * t) * (sin(6.28318 * f * 1.1892 * t) + 0.45 * sin(6.28318 * (f * 1.1892 + 3.1) * t)) + "
-         "0.24 * exp(-11.5 * t) * sin(6.28318 * f * 1.7838 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfTablaBayaCombo()},
+         "0.65 * exp(-4.5 * t) * sin(2 * pi * (f * 0.2973 * t - 0.5 * exp(-20 * t))) + 0.25 * exp(-7 * t) * sin(2 * pi * f * 0.5946 * t) + 0.15 * exp(-9 * t) * sin(2 * pi * f * 1.1892 * t)",
+         "0.35 * exp(-4.5 * t) * sin(2 * pi * (f * 0.2973 * t - 0.5 * exp(-20 * t))) + 0.5 * exp(-6.5 * t) * sin(2 * pi * (f * 0.5946 * t - 0.08 * exp(-35 * t))) + 0.35 * exp(-9 * t) * sin(2 * pi * f * 1.1892 * t) + 0.2 * exp(-14 * t) * sin(2 * pi * f * 1.7838 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Ge", true, false,
-         "0.78 * exp(-3.9 * t) * sin(6.28318 * (76 * t + 1.50 * (1 - exp(-17 * t)) - 0.60 * (1 - exp(-5.0 * t)))) + "
-         "0.30 * exp(-8.5 * t) * sin(6.28318 * (152 * t + 2.1 * (1 - exp(-17 * t)))) + "
-         "0.14 * exp(-15.0 * t) * sin(6.28318 * 228 * t) + "
-         "0.24 * exp(-65 * t) * (sin(6.28318 * (290 * t - 0.4 * exp(-40 * t))) + 0.35 * randv(t * srate) * sin(6.28318 * 520 * t))",
-         "0.55 * exp(-3.9 * t) * sin(6.28318 * (76 * t + 1.50 * (1 - exp(-17 * t)) - 0.60 * (1 - exp(-5.0 * t)))) + "
-         "0.22 * exp(-8.5 * t) * sin(6.28318 * (152 * t + 2.1 * (1 - exp(-17 * t)))) + "
-         "0.18 * exp(-60 * t) * sin(6.28318 * 290 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfBayaGumki()},
+         "0.75 * exp(-5 * t) * sin(2 * pi * (f * 0.2973 * t - 0.6 * exp(-25 * t))) + 0.25 * exp(-14 * t) * sin(2 * pi * f * 0.5946 * t) + 0.2 * exp(-60 * t) * sin(2 * pi * 280 * t)",
+         "0.5 * exp(-5 * t) * sin(2 * pi * (f * 0.2973 * t - 0.6 * exp(-25 * t))) + 0.15 * exp(-14 * t) * sin(2 * pi * f * 0.5946 * t) + 0.12 * exp(-60 * t) * sin(2 * pi * 280 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Ka", true, false,
-         "0.68 * exp(-28 * t) * sin(6.28318 * (115 * t + 1.1 * (1 - exp(-45 * t)))) + "
-         "0.38 * exp(-70 * t) * sin(6.28318 * (340 * t + 0.8 * (1 - exp(-60 * t)))) + "
-         "0.28 * exp(-120 * t) * sin(6.28318 * 780 * t) + "
-         "0.32 * exp(-110 * t) * randv(t * srate) * (0.4 + 0.6 * sin(6.28318 * 1150 * t))",
-         "0.48 * exp(-28 * t) * sin(6.28318 * (115 * t + 1.1 * (1 - exp(-45 * t)))) + "
-         "0.26 * exp(-70 * t) * sin(6.28318 * 340 * t) + "
-         "0.22 * exp(-110 * t) * randv(t * srate) * sin(6.28318 * 980 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfDrySkinSlap()},
+         "0.6 * exp(-35 * t) * sin(2 * pi * (160 * t - 0.4 * exp(-50 * t))) + 0.35 * exp(-90 * t) * sin(2 * pi * 420 * t) + 0.25 * exp(-140 * t) * sin(2 * pi * 950 * t)",
+         "0.4 * exp(-35 * t) * sin(2 * pi * (160 * t - 0.4 * exp(-50 * t))) + 0.22 * exp(-90 * t) * sin(2 * pi * 420 * t) + 0.15 * exp(-140 * t) * sin(2 * pi * 950 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Na", true, false,
-         "0.28 * exp(-11 * t) * sin(6.28318 * (f * 0.5946 * t - 0.12 * exp(-45 * t))) + "
-         "0.46 * exp(-9.5 * t) * (sin(6.28318 * f * 1.1892 * t) + 0.55 * sin(6.28318 * (f * 1.1892 + 3.2) * t)) + "
-         "0.24 * exp(-16 * t) * (sin(6.28318 * f * 1.7838 * t) + 0.40 * sin(6.28318 * (f * 1.7838 + 4.5) * t)) + "
-         "0.16 * exp(-28 * t) * sin(6.28318 * f * 2.3784 * t) + "
-         "0.28 * exp(-115 * t) * (sin(6.28318 * 2100 * t) + 0.6 * randv(t * srate) * sin(6.28318 * 1650 * t))",
-         "0.38 * exp(-11 * t) * sin(6.28318 * (f * 0.5946 * t - 0.12 * exp(-45 * t))) + "
-         "0.58 * exp(-9.5 * t) * (sin(6.28318 * f * 1.1892 * t) + 0.55 * sin(6.28318 * (f * 1.1892 + 3.2) * t)) + "
-         "0.30 * exp(-16 * t) * sin(6.28318 * f * 1.7838 * t) + "
-         "0.25 * exp(-95 * t) * sin(6.28318 * f * 3.5 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfDayaCrisp()},
+         "0.35 * exp(-10 * t) * sin(2 * pi * (f * 0.5946 * t - 0.12 * exp(-40 * t))) + 0.3 * exp(-12 * t) * sin(2 * pi * f * 1.1892 * t) + 0.15 * exp(-22 * t) * sin(2 * pi * f * 1.7838 * t) + 0.18 * exp(-85 * t) * sin(2 * pi * f * 3.5 * t)",
+         "0.55 * exp(-10 * t) * sin(2 * pi * (f * 0.5946 * t - 0.12 * exp(-40 * t))) + 0.45 * exp(-12 * t) * sin(2 * pi * f * 1.1892 * t) + 0.22 * exp(-22 * t) * sin(2 * pi * f * 1.7838 * t) + 0.28 * exp(-85 * t) * sin(2 * pi * f * 3.5 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Ta", true, false,
-         "0.42 * exp(-13 * t) * (sin(6.28318 * (f * 0.5946 * t - 0.18 * exp(-45 * t))) + 0.4 * sin(6.28318 * (f * 0.5946 + 2.6) * t)) + "
-         "0.34 * exp(-15 * t) * sin(6.28318 * f * 1.1892 * t) + "
-         "0.18 * exp(-24 * t) * sin(6.28318 * f * 1.7838 * t) + "
-         "0.32 * exp(-95 * t) * (sin(6.28318 * 1850 * t) + 0.55 * randv(t * srate) * sin(6.28318 * 1400 * t))",
-         "0.62 * exp(-13 * t) * sin(6.28318 * (f * 0.5946 * t - 0.18 * exp(-45 * t))) + "
-         "0.42 * exp(-15 * t) * (sin(6.28318 * f * 1.1892 * t) + 0.45 * sin(6.28318 * (f * 1.1892 + 3.0) * t)) + "
-         "0.35 * exp(-90 * t) * sin(6.28318 * 1850 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfDayaCrisp()},
+         "0.4 * exp(-14 * t) * sin(2 * pi * (f * 0.5946 * t - 0.18 * exp(-45 * t))) + 0.2 * exp(-20 * t) * sin(2 * pi * f * 1.1892 * t) + 0.25 * exp(-90 * t) * sin(2 * pi * 1800 * t)",
+         "0.65 * exp(-14 * t) * sin(2 * pi * (f * 0.5946 * t - 0.18 * exp(-45 * t))) + 0.3 * exp(-20 * t) * sin(2 * pi * f * 1.1892 * t) + 0.38 * exp(-90 * t) * sin(2 * pi * 1800 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Ti", true, false,
-         "0.48 * exp(-42 * t) * sin(6.28318 * (265 * t + 0.75 * (1 - exp(-65 * t)))) + "
-         "0.36 * exp(-78 * t) * sin(6.28318 * 760 * t) + "
-         "0.26 * exp(-120 * t) * sin(6.28318 * 1320 * t) + "
-         "0.28 * exp(-150 * t) * randv(t * srate) * (0.35 + 0.65 * sin(6.28318 * 1750 * t))",
-         "0.55 * exp(-42 * t) * sin(6.28318 * (265 * t + 0.75 * (1 - exp(-65 * t)))) + "
-         "0.44 * exp(-78 * t) * sin(6.28318 * 760 * t) + "
-         "0.30 * exp(-120 * t) * sin(6.28318 * 1320 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfDrySkinSlap()},
+         "0.32 * exp(-85 * t) * sin(2 * pi * 820 * t) + 0.25 * exp(-130 * t) * sin(2 * pi * 1350 * t) + 0.18 * exp(-220 * t) * sin(2 * pi * 2500 * t)",
+         "0.5 * exp(-85 * t) * sin(2 * pi * 820 * t) + 0.4 * exp(-130 * t) * sin(2 * pi * 1350 * t) + 0.3 * exp(-220 * t) * sin(2 * pi * 2500 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Re", true, false,
-         "0.45 * exp(-45 * t) * sin(6.28318 * (295 * t + 0.80 * (1 - exp(-70 * t)))) + "
-         "0.35 * exp(-72 * t) * sin(6.28318 * 840 * t) + "
-         "0.24 * exp(-115 * t) * sin(6.28318 * 1460 * t) + "
-         "0.26 * exp(-145 * t) * randv(t * srate) * (0.35 + 0.65 * sin(6.28318 * 1950 * t))",
-         "0.52 * exp(-45 * t) * sin(6.28318 * (295 * t + 0.80 * (1 - exp(-70 * t)))) + "
-         "0.42 * exp(-72 * t) * sin(6.28318 * 840 * t) + "
-         "0.28 * exp(-115 * t) * sin(6.28318 * 1460 * t)",
-         false, 0.5f, 0.5f, 0.1f, tfDrySkinSlap()},
+         "0.30 * exp(-65 * t) * sin(2 * pi * 900 * t) + 0.22 * exp(-110 * t) * sin(2 * pi * 1480 * t) + 0.16 * exp(-180 * t) * sin(2 * pi * 2750 * t)",
+         "0.48 * exp(-65 * t) * sin(2 * pi * 900 * t) + 0.38 * exp(-110 * t) * sin(2 * pi * 1480 * t) + 0.26 * exp(-180 * t) * sin(2 * pi * 2750 * t)",
+         false, 0.5f, 0.5f, 0.1f},
         {"Kartal Open", true, false,
          "0.45 * exp(-3 * t) * sin(2 * pi * 3120 * t + 1.5 * exp(-8 * t) * sin(2 * pi * 4412 * t)) + 0.35 * exp(-4.5 * t) * sin(2 * pi * 4850 * t + 1.2 * exp(-12 * t) * sin(2 * pi * 6858 * t)) + 0.3 * exp(-70 * t) * sin(2 * pi * 7200 * t + 4 * sin(2 * pi * 5100 * t))",
          "0.45 * exp(-2.8 * t) * sin(2 * pi * 3126 * t + 1.5 * exp(-8 * t) * sin(2 * pi * 4420 * t)) + 0.35 * exp(-4.2 * t) * sin(2 * pi * 4858 * t + 1.2 * exp(-12 * t) * sin(2 * pi * 6866 * t)) + 0.3 * exp(-70 * t) * sin(2 * pi * 7215 * t + 4 * sin(2 * pi * 5110 * t))",
-         false, 0.5f, 0.5f, 0.1f, tfBronzeCymbal()},
+         false, 0.5f, 0.5f, 0.1f},
         {"Kartal Closed", true, false,
          "0.5 * exp(-40 * t) * sin(2 * pi * 3120 * t + 3 * exp(-60 * t) * sin(2 * pi * 4412 * t)) + 0.4 * exp(-55 * t) * sin(2 * pi * 4850 * t + 3.5 * exp(-70 * t) * sin(2 * pi * 6858 * t)) + 0.4 * exp(-100 * t) * sin(2 * pi * 7500 * t + 6 * sin(2 * pi * 5300 * t))",
          "0.5 * exp(-40 * t) * sin(2 * pi * 3126 * t + 3 * exp(-60 * t) * sin(2 * pi * 4420 * t)) + 0.4 * exp(-55 * t) * sin(2 * pi * 4858 * t + 3.5 * exp(-70 * t) * sin(2 * pi * 6866 * t)) + 0.4 * exp(-100 * t) * sin(2 * pi * 7515 * t + 6 * sin(2 * pi * 5310 * t))",
-         false, 0.5f, 0.5f, 0.1f, tfBronzeCymbal()},
+         false, 0.5f, 0.5f, 0.1f},
         {"Ghanta", true, false,
          "clamp(-1, 0.35 * ( 0.45 * exp(-0.35 * t) * (sin(6.28318 * 0.5 * f * t) + 0.8 * sin(6.28318 * (0.5 * f + 0.8 + A2 * 1.5) * t)) + 0.90 * exp(-1.1 * t) * (sin(6.28318 * f * t + 1.8 * exp(-35 * t) * sin(6.28318 * 2.756 * f * t)) + 0.6 * sin(6.28318 * (f * 1.0035) * t)) + 0.55 * exp(-1.9 * t) * sin(6.28318 * 1.183 * f * t) + 0.70 * exp(-2.4 * t) * (sin(6.28318 * 2.0 * f * t) + 0.5 * sin(6.28318 * (2.0025 * f) * t)) + 0.45 * exp(-4.5 * t) * sin(6.28318 * 2.756 * f * t) + 0.30 * exp(-8.0 * t) * sin(6.28318 * 4.08 * f * t) + 0.20 * exp(-14.0 * t) * sin(6.28318 * 5.41 * f * t) + 0.35 * exp(-80 * t) * randv(t * srate) * (0.4 + 0.6 * sin(6.28318 * 3200 * t)) ), 1)",
-         "", false, 0.5f, 0.5f, 0.1f, tfBronzeCymbal()},
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Kansa", true, false,
          "clamp(-1, 0.38 * ( 0.85 * exp(-0.9 * t) * sin(6.28318 * f * (1 + 0.025 * exp(-12 * t)) * t + 0.8 * exp(-2.5 * t) * sin(6.28318 * 1.618 * f * t)) + 0.65 * exp(-1.4 * t) * sin(6.28318 * 1.414 * f * t + (2.5 + A1 * 2.0) * (1 - exp(-8 * t)) * exp(-1.8 * t) * sin(6.28318 * 2.414 * f * t)) + 0.50 * (1 - exp(-6 * t)) * exp(-1.6 * t) * sin(6.28318 * 2.236 * f * t + (3.5 + A2 * 3.0) * (1 - exp(-5 * t)) * exp(-2.2 * t) * sin(6.28318 * 3.618 * f * t)) + 0.35 * (1 - exp(-4 * t)) * exp(-2.5 * t) * sin(6.28318 * 3.162 * f * t) + (0.18 * (1 - exp(-5 * t)) * exp(-2.0 * t) + 0.25 * exp(-60 * t)) * randv(t * srate) * sin(6.28318 * f * 4.5 * t) ) + 0.22 * last(1), 1)",
-         "", false, 0.5f, 0.5f, 0.1f, tfBronzeCymbal()},
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Manjira", true, false,
          "clamp(-1, 0.40 * ( 0.70 * exp(-3.5 * t) * (sin(6.28318 * (f * 4.0) * t) + 0.8 * sin(6.28318 * (f * 4.015) * t)) + 0.55 * exp(-5.0 * t) * sin(6.28318 * (f * 5.38) * t + 2.2 * exp(-15 * t) * sin(6.28318 * (f * 7.12) * t)) + 0.40 * exp(-8.0 * t) * sin(6.28318 * (f * 6.85) * t) + 0.30 * exp(-18.0 * t) * sin(6.28318 * (f * 9.20) * t) + (0.45 * exp(-120 * t) + 0.12 * exp(-12 * t)) * randv(t * srate) * (0.3 + 0.7 * sin(6.28318 * 6500 * t)) ), 1)",
-         "", false, 0.5f, 0.5f, 0.1f, tfBronzeCymbal()},
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Damaru", true, false,
          "clamp(-1, last(1) + clamp(0.01, 6.28318 * (f * 3.5 + 800 * exp(-35 * t) + A1 * 1000) / srate, 0.98) * ( ( 0.90 * exp(-7.5 * t) * sinew(integrate(f * (1 + (0.45 + A2 * 0.4) * exp(-28 * t)))) + 0.45 * exp(-14.0 * t) * sinew(integrate(1.593 * f * (1 + 0.30 * exp(-35 * t)))) + 0.25 * exp(-22.0 * t) * sinew(integrate(2.135 * f * (1 + 0.20 * exp(-40 * t)))) + (0.55 * exp(-90 * t) + 0.35 * exp(-70 * mod(t, 0.125 + A3 * 0.08)) * (t < 0.38)) * randv(t * srate) * (0.4 + 0.6 * sin(6.28318 * 1400 * t)) ) - last(1) ), 1)",
-         "", false, 0.5f, 0.5f, 0.1f, tfDrySkinSlap()},
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Ra", true, false,
-         "0.58 * exp(-52 * t) * sin(6.28318 * (310 * t + 0.85 * (1 - exp(-75 * t)))) + "
-         "0.40 * exp(-85 * t) * sin(6.28318 * 890 * t) + "
-         "0.25 * exp(-130 * t) * sin(6.28318 * 1580 * t) + "
-         "0.30 * exp(-140 * t) * randv(t * srate) * (0.4 + 0.6 * sin(6.28318 * 1450 * t))",
-         "", false, 0.5f, 0.5f, 0.1f, tfDrySkinSlap()},
+         "0.5 * exp(-60 * t) * randv(t * srate) * sin(2 * pi * 400 * t)",
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Ki", true, false,
-         "0.62 * exp(-46 * t) * sin(6.28318 * (175 * t + 0.95 * (1 - exp(-65 * t)))) + "
-         "0.38 * exp(-88 * t) * sin(6.28318 * 510 * t) + "
-         "0.26 * exp(-135 * t) * sin(6.28318 * 1120 * t) + "
-         "0.32 * exp(-150 * t) * randv(t * srate) * (0.4 + 0.6 * sin(6.28318 * 1250 * t))",
-         "", false, 0.5f, 0.5f, 0.1f, tfDrySkinSlap()},
+         "0.6 * exp(-70 * t) * randv(t * srate) * sin(2 * pi * 600 * t)",
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Tabla_Na", true, false,
-         "0.55 * exp(-8.5 * t) * (sin(6.28318 * f * 1.1892 * t) + 0.65 * sin(6.28318 * (f * 1.1892 + 3.5) * t)) + "
-         "0.36 * exp(-13.0 * t) * (sin(6.28318 * f * 1.7838 * t) + 0.45 * sin(6.28318 * (f * 1.7838 + 4.8) * t)) + "
-         "0.22 * exp(-22.0 * t) * sin(6.28318 * f * 2.3784 * t) + "
-         "0.30 * exp(-120 * t) * (sin(6.28318 * 2600 * t) + 0.5 * randv(t * srate) * sin(6.28318 * 1900 * t))",
-         "", false, 0.5f, 0.5f, 0.1f, tfDayaCrisp()},
+         "0.8 * exp(-30 * t) * sin(2 * pi * 850 * t) + 0.4 * exp(-80 * t) * sin(2 * pi * 1500 * t)",
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Dagga_Ge", true, false,
-         "0.82 * exp(-3.4 * t) * sin(6.28318 * (72 * t + 1.65 * (1 - exp(-15 * t)) - 0.72 * (1 - exp(-4.2 * t)))) + "
-         "0.34 * exp(-7.5 * t) * sin(6.28318 * (144 * t + 2.2 * (1 - exp(-15 * t)))) + "
-         "0.16 * exp(-14.0 * t) * sin(6.28318 * 216 * t) + "
-         "0.25 * exp(-75 * t) * (sin(6.28318 * 280 * t) + 0.35 * randv(t * srate) * sin(6.28318 * 480 * t))",
-         "", false, 0.5f, 0.5f, 0.1f, tfBayaGumki()},
+         "0.9 * exp(-4 * t) * sin(2 * pi * (110 + 40 * exp(-10 * t)) * t) + 0.3 * exp(-20 * t) * sin(2 * pi * 220 * t)",
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Khol_High", true, false,
-         "0.62 * exp(-9.5 * t) * (sin(6.28318 * (780 * t - 0.12 * exp(-55 * t))) + 0.55 * sin(6.28318 * 784.2 * t)) + "
-         "0.38 * exp(-15.0 * t) * (sin(6.28318 * 1560 * t) + 0.4 * sin(6.28318 * 1566 * t)) + "
-         "0.22 * exp(-26.0 * t) * sin(6.28318 * 2340 * t) + "
-         "0.32 * exp(-110 * t) * (sin(6.28318 * 3100 * t) + 0.5 * randv(t * srate) * sin(6.28318 * 2200 * t))",
-         "", false, 0.5f, 0.5f, 0.1f, tfKholBody()},
+         "0.7 * exp(-40 * t) * sin(2 * pi * 1200 * t) + 0.4 * exp(-100 * t) * sin(2 * pi * 2800 * t)",
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Khol_Low", true, false,
-         "0.84 * exp(-3.6 * t) * sin(6.28318 * (86 * t + 1.40 * (1 - exp(-18 * t)) - 0.55 * (1 - exp(-5.0 * t)))) + "
-         "0.35 * exp(-8.0 * t) * sin(6.28318 * (172 * t + 1.8 * (1 - exp(-18 * t)))) + "
-         "0.22 * exp(-18.0 * t) * sin(6.28318 * 315 * t) + "
-         "0.26 * exp(-80 * t) * randv(t * srate) * sin(6.28318 * 440 * t)",
-         "", false, 0.5f, 0.5f, 0.1f, tfKholBody()},
+         "0.8 * exp(-3 * t) * sin(2 * pi * (85 + 20 * exp(-8 * t)) * t)",
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Shankha", false, true,
          "clamp(-1, last(1) + clamp(0.01, 6.28318 * f * (2.2 + A1 * 2.0) / srate, 0.92) * ( 0.28 * ( (1 - exp(-10 * t)) * exp(-0.16 * t) * ( sin(6.28318 * f * (1 - 0.18 * exp(-15 * t)) * t) + 0.65 * sin(12.56636 * f * (1 - 0.18 * exp(-15 * t)) * t) + 0.40 * (1 - exp(-4 * t)) * sin(18.84955 * f * (1 - 0.18 * exp(-15 * t)) * t) ) + ((t > 0.06) * (1 - exp(-8 * (t - 0.06))) * exp(-0.15 * (t - 0.06)) * ( 0.85 * sin(6.28318 * (f * 1.006 + A2 * 3.0) * (1 - 0.15 * exp(-12 * (t - 0.06))) * (t - 0.06)) + 0.75 * sin(12.56636 * (f * 1.006 + A2 * 3.0) * (1 - 0.15 * exp(-12 * (t - 0.06))) * (t - 0.06)) + 0.55 * (1 - exp(-3.5 * (t - 0.06))) * sin(18.84955 * (f * 1.006 + A2 * 3.0) * (1 - 0.15 * exp(-12 * (t - 0.06))) * (t - 0.06)) )) + (0.10 * exp(-5 * t) + 0.025) * randv(t * srate) ) - last(1) ), 1)",
-         "", false, 0.5f, 0.5f, 0.1f, tfShankhaConch()},
-        {"Shankha 2", false, true,
+         "", false, 0.5f, 0.5f, 0.1f},
+        {"Shankha 2", false,true,
          "clamp(-1, last(1) + clamp(0.02, 6.28318 * (1200 + f * 1.5 + A1 * 800) / srate, 0.96) * ( (1 - exp(-18 * t)) * exp(-0.08 * t) * (0.88 + 0.12 * sinew(5.5 * t)) * ( 0.45 * saww(integrate(f * (1 - 0.08 * exp(-25 * t)) * (1 + (0.018 + A2 * 0.04) * sinew(5.8 * t)))) + 0.35 * squarew(integrate(f * 1.001 * (1 - 0.08 * exp(-25 * t)) * (1 + (0.018 + A2 * 0.04) * sinew(5.8 * t)))) + 0.30 * sin(6.28318 * 2.0 * f * (1 + (0.018 + A2 * 0.04) * sin(6.28318 * 5.8 * t)) * t) + 0.25 * sin(6.28318 * 3.0 * f * (1 + (0.018 + A2 * 0.04) * sin(6.28318 * 5.8 * t)) * t) + (0.09 * exp(-15 * t) + 0.04) * randv(t * srate) * sin(6.28318 * 1800 * t) ) - last(1) ), 1)",
-         "", false, 0.5f, 0.5f, 0.1f, tfShankhaConch()},
+         "", false, 0.5f, 0.5f, 0.1f},
         {"Harmonium_Bellows", false, false,
-         defaultHarmoniumO1(), "", true, 2.0f, 1.0f, 0.348f, ""},
+         defaultHarmoniumO1(), "", true, 2.0f, 1.0f, 0.348f},
         {"Singing_Voice", false, true,
-         defaultSingingVoiceO1(), "", true, 2.0f, 0.5f, 0.15f, ""}
+         defaultSingingVoiceO1(), "", true, 2.0f, 1.0f, 0.15f}
     };
     return tracks;
 }
@@ -503,17 +395,17 @@ inline const std::vector<HarmoniumSong>& getHarmoniumSongs() {
                                                                    {"Form B (Avaroha 4-Note)", 4, {"G'","R'","S'","N","R'","S'","N","D","S'","N","D","P","N","D","P","m","D","P","m","G","P","m","G","R","m","G","R","S","S","-","-","-"}}
                                                                }},
         {"Song with Synthesised Voice Template", "Template", "4+4", 120, {
-                                                                             {"Part 1 (Sthayi)", 2,
-                                                                                 {
-                                                                                     "-", "-", "-", "-", "-", "-", "-", "-",
-                                                                                     "-", "-", "-", "-", "-", "-", "-", "-"
-                                                                                 },
-                                                                                 {
-                                                                                     "-", "-", "-", "-", "-", "-", "-", "-",
-                                                                                     "-", "-", "-", "-", "-", "-", "-", "-"
-                                                                                 }
-                                                                             }
-                                                                         }, " ", {}}
+                                                                     {"Part 1 (Sthayi)", 2,
+                                                                         { // Swaras (Notes): S, R, G, m, P, D, N, etc. or '-' to hold the previous note
+                                                                             "-", "-", "-", "-", "-", "-", "-", "-",
+                                                                             "-", "-", "-", "-", "-", "-", "-", "-"
+                                                                         },
+                                                                         { // Lyrics: one syllable per cell, or '-' to sustain the previous vowel
+                                                                             "-", "-", "-", "-", "-", "-", "-", "-",
+                                                                             "-", "-", "-", "-", "-", "-", "-", "-"
+                                                                         }
+                                                                     }
+                                                                 }, " ", {}}
     };
     return songs;
 }

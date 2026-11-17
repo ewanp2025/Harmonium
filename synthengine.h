@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
-#include <cstdio>
 #include "xpressive_parser.h"
 #include "effect.h"
 #include "drum_presets.h"
@@ -47,18 +46,6 @@ inline float fastTanh(float x) {
     return x * (27.0f + x2) / (27.0f + 9.0f * x2);
 }
 
-struct HarmoniumParams {
-    float bassStop      = 0.65f; // 16' Sub-octave reed (f/2)
-    float principalStop = 1.00f; // 8' Principal reed (f)
-    float celesteStop   = 0.45f; // 8' Detuned celeste reed
-    float couplerStop   = 0.00f; // 4' Octave-up coupler reed (2*f)
-    float celesteCents  = 8.0f;  // Detune in cents (0..25)
-    float brightness    = 0.75f; // Upper harmonics (Jali lid open/close)
-    float attackRate    = 8.0f;  // (1 - exp(-t * attackRate))
-    float releaseRate   = 18.0f; // exp(-trel * releaseRate)
-    float pumpModDepth  = 0.18f; // Bellows pulsation depth
-};
-
 class SynthEngine {
 public:
     static constexpr int NUM_TRACKS        = 24;
@@ -66,8 +53,6 @@ public:
     static constexpr int TRACK_HARMONIUM   = 22;
     static constexpr int TRACK_SINGING     = 23;
     static constexpr int VOCAL_CHAMBER_LEN = 4096;
-    static constexpr int SCOPE_RING_SIZE   = 512;
-    static constexpr int SCOPE_RING_MASK   = SCOPE_RING_SIZE - 1;
 
     SynthEngine() : m_liveHarmoniumTf(22050.0f) {}
 
@@ -102,8 +87,6 @@ public:
         m_tanpuraO1    = XpressiveParser::parse(BuiltInPresets::tanpuraDroneO1());
         m_tanpuraO2    = XpressiveParser::parse(BuiltInPresets::tanpuraDroneO2());
 
-        applyHarmoniumParams(m_harmParams);
-
         const auto& trkSpecs = BuiltInPresets::getTracks();
         for (int i = 0; i < NUM_TRACKS && i < static_cast<int>(trkSpecs.size()); ++i) {
             m_trackMuted[i] = trkSpecs[i].muted;
@@ -121,141 +104,6 @@ public:
         m_droneDirty.store(true);
 
         rebuildActivePatterns();
-    }
-
-    float getSampleRate() const { return m_srate; }
-    const HarmoniumParams& getHarmoniumParams() const { return m_harmParams; }
-    const std::string& getActiveHarmoniumFormula() const { return m_customHarmFormula; }
-
-    void setTestScopeEnabled(bool en) {
-        m_testScopeEnabled.store(en, std::memory_order_relaxed);
-    }
-    bool isTestScopeEnabled() const {
-        return m_testScopeEnabled.load(std::memory_order_relaxed);
-    }
-
-    void getScopeSamples(float* outBuf, int count) const {
-        if (!outBuf || count <= 0) return;
-        int n = std::min(count, SCOPE_RING_SIZE);
-        uint32_t w = m_scopeWriteIdx.load(std::memory_order_acquire);
-        uint32_t start = w - static_cast<uint32_t>(n);
-        for (int i = 0; i < n; ++i) {
-            outBuf[i] = m_scopeRing[(start + static_cast<uint32_t>(i)) & SCOPE_RING_MASK];
-        }
-    }
-
-    void triggerTestInstrument(int trackIdx) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        int saMidi = 60 + m_saSemitone.load();
-
-        if (trackIdx >= 0 && trackIdx < NUM_BAKED_DRUMS) {
-            triggerBakedDrum(trackIdx, true);
-        } else if (trackIdx == TRACK_HARMONIUM) {
-            static const int kTestOffsets[4] = {0, 4, 7, 12};
-            int midi = my_clamp(saMidi + kTestOffsets[m_testHarmStep++ & 3] + m_octaveShift.load() * 12, 24, 108);
-            m_detectedMidiNote.store(midi);
-
-            HarmoniumVoice* slot = &m_harmVoices[0];
-            for (auto& hv : m_harmVoices) {
-                if (!hv.active) { slot = &hv; break; }
-            }
-            slot->active = true;
-            slot->held = true;
-            slot->isAutoPreset = false;
-            slot->isTestVoice = true;
-            slot->midiNote = midi;
-            slot->rawMidiNote = midi;
-            slot->velQ14 = 15565; // 0.95 in Q14
-            slot->attackEnvQ14 = 0;
-            slot->relEnvQ14 = 16384;
-            slot->samplesElapsed = 0;
-            slot->autoDurSamples = static_cast<int32_t>(0.65f * m_srate);
-            slot->phaseLfo = 0;
-            slot->phaseVib = 0;
-            slot->phaseBase = 0;
-            slot->phaseCeleste = 0;
-        } else if (trackIdx == TRACK_SINGING) {
-            static const int kSingOffsets[8] = {0, 2, 4, 5, 7, 9, 11, 12};
-            static const char* kSingSyls[8]  = {"sa", "re", "ga", "ma", "pa", "dha", "ni", "om"};
-            int step = m_testSingStep++ & 7;
-            int midi = my_clamp(saMidi + kSingOffsets[step] + m_octaveShift.load() * 12, 36, 96);
-            m_detectedMidiNote.store(midi);
-
-            m_singVoice.active = true;
-            m_singVoice.held = true;
-            m_singVoice.isAutoPreset = false;
-            m_singVoice.midiNote = midi;
-            m_singVoice.targetFreq = midiToFreq(midi);
-            m_singVoice.curFreq = m_singVoice.targetFreq;
-            m_singVoice.t = 0.0f;
-            m_singVoice.trel = 0.0f;
-            m_singVoice.autoDurSec = 0.68f;
-            m_singVoice.plan = compileSanskritSyllable(kSingSyls[step]);
-            m_singVoice.curA1 = m_singVoice.plan.onsetA1;
-            m_singVoice.curA3 = m_singVoice.plan.tractScaleA3;
-            m_singVoice.phase1 = 0.0f;
-            m_singVoice.phase2 = 0.0f;
-        }
-    }
-
-    void silenceAllVoices() {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        for (auto& dv : m_drumVoices) dv.active = false;
-        for (auto& hv : m_harmVoices) hv.active = false;
-        m_singVoice.active = false;
-    }
-
-    void resetHarmoniumParamsToDefault() {
-        HarmoniumParams def;
-        applyHarmoniumParams(def);
-    }
-
-    void applyHarmoniumParams(const HarmoniumParams& p) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_harmParams.bassStop      = my_clamp(p.bassStop,      0.0f, 1.20f);
-        m_harmParams.principalStop = my_clamp(p.principalStop, 0.0f, 1.20f);
-        m_harmParams.celesteStop   = my_clamp(p.celesteStop,   0.0f, 1.20f);
-        m_harmParams.couplerStop   = my_clamp(p.couplerStop,   0.0f, 0.80f);
-        m_harmParams.celesteCents  = my_clamp(p.celesteCents,  0.0f, 25.0f);
-        m_harmParams.brightness    = my_clamp(p.brightness,    0.10f, 1.50f);
-        m_harmParams.attackRate    = my_clamp(p.attackRate,    2.0f, 28.0f);
-        m_harmParams.releaseRate   = my_clamp(p.releaseRate,   4.0f, 40.0f);
-        m_harmParams.pumpModDepth  = my_clamp(p.pumpModDepth,  0.0f, 0.45f);
-
-        // 1. Update Q14 fixed-point engine coefficients & LUTs
-        const double q32Scale = 4294967296.0 / static_cast<double>(m_srate);
-        const float detuneRatio = std::pow(2.0f, m_harmParams.celesteCents * (1.0f / 1200.0f));
-        for (int m = 0; m < 128; ++m) {
-            m_midiCelesteIncLut[m] = static_cast<uint32_t>((m_midiFreqLut[m] * detuneRatio) * q32Scale);
-        }
-
-        m_attackStepQ15    = static_cast<int32_t>(std::lround((1.0f - std::exp(-m_harmParams.attackRate / m_srate)) * 32768.0f));
-        m_relDecayQ15      = static_cast<int32_t>(std::lround(std::exp(-m_harmParams.releaseRate / m_srate) * 32768.0f));
-        m_harmBassQ14      = static_cast<int32_t>(std::lround(m_harmParams.bassStop * 16384.0f));
-        m_harmPrincipalQ14 = static_cast<int32_t>(std::lround(m_harmParams.principalStop * 16384.0f));
-        m_harmCelesteQ14   = static_cast<int32_t>(std::lround(m_harmParams.celesteStop * 16384.0f));
-        m_harmCouplerQ14   = static_cast<int32_t>(std::lround(m_harmParams.couplerStop * 16384.0f));
-        m_harmBrightQ14    = static_cast<int32_t>(std::lround(m_harmParams.brightness * 16384.0f));
-        m_harmPumpModQ14   = static_cast<int32_t>(std::lround(m_harmParams.pumpModDepth * 16384.0f));
-        m_harmPumpBaseQ14  = 16384 - m_harmPumpModQ14;
-
-        // 2. Rebuild live Xpressive formula string so AST and formula stay 100% synced
-        char buf[1024];
-        std::snprintf(buf, sizeof(buf),
-                      "(1 - exp(-t * %.1f)) * exp(-trel * %.1f) * (%.2f + %.2f * sinew(integrate(tempo / 120))) * ( "
-                      "%.2f * (sinew(integrate(f * cent(-4 * sinew(integrate(tempo / 120))))) - sinew(2 * integrate(f))/2 + "
-                      "(%.2f + 0.25 * sinew(integrate(tempo / 120))) * (sinew(3 * integrate(f))/3 - sinew(4 * integrate(f))/4 + sinew(5 * integrate(f))/5)) + "
-                      "%.2f * (sinew(integrate(f * cent(%.1f))) - sinew(2 * integrate(f * cent(%.1f)))/2 + sinew(3 * integrate(f * cent(%.1f)))/3) + "
-                      "%.2f * (sinew(integrate(f / 2)) - sinew(2 * integrate(f / 2))/2 + sinew(3 * integrate(f / 2))/3) + "
-                      "%.2f * (sinew(integrate(f * 2)) - sinew(2 * integrate(f * 2))/2 + sinew(3 * integrate(f * 2))/3) )",
-                      m_harmParams.attackRate, m_harmParams.releaseRate,
-                      1.0f - m_harmParams.pumpModDepth, m_harmParams.pumpModDepth,
-                      m_harmParams.principalStop, m_harmParams.brightness,
-                      m_harmParams.celesteStop, m_harmParams.celesteCents, m_harmParams.celesteCents, m_harmParams.celesteCents,
-                      m_harmParams.bassStop, m_harmParams.couplerStop);
-
-        m_customHarmFormula = buf;
-        m_harmoniumAst = XpressiveParser::parse(m_customHarmFormula.c_str());
     }
 
     void randomizeRaga() {
@@ -417,53 +265,36 @@ public:
                           ? XpressiveParser::parse(trkSpecs[t].o2Str)
                           : nullptr;
 
-            TransferFunctionFX trackTf(m_srate);
-            trackTf.setFormula(trkSpecs[t].tfStr ? trkSpecs[t].tfStr : "");
-            const int fftLatency = (trackTf.enabled && !trackTf.isUsingFastPath())
-                                       ? (TransferFunctionFX::FFT_SIZE - TransferFunctionFX::HOP_SIZE)
-                                       : 0;
-
             float int1[16] = {0}, int2[16] = {0};
             float last1 = 0.0f, last2 = 0.0f;
-            const int totalSteps = m_bakedDrumLen + fftLatency;
 
-            for (int s = 0; s < totalSteps; ++s) {
-                float val = 0.0f;
-                if (s < m_bakedDrumLen) {
-                    XpressiveParser::Env env;
-                    env.t = s * dt;
-                    env.tempo = 140.0f;
-                    env.srate = m_srate;
-                    env.f = fA4;
-                    env.lastOut = last1;
-                    env.intState = int1;
-                    env.numIntegrators = 16;
+            for (int s = 0; s < m_bakedDrumLen; ++s) {
+                XpressiveParser::Env env;
+                env.t = s * dt;
+                env.tempo = 140.0f;
+                env.srate = m_srate;
+                env.f = fA4;
+                env.lastOut = last1;
+                env.intState = int1;
+                env.numIntegrators = 16;
 
-                    float v1 = o1->eval(env);
-                    last1 = v1;
-                    val = v1;
+                float v1 = o1->eval(env);
+                last1 = v1;
+                float val = v1;
 
-                    if (o2) {
-                        env.lastOut = last2;
-                        env.intState = int2;
-                        float v2 = o2->eval(env);
-                        last2 = v2;
-                        val = 0.5f * (v1 + v2);
-                    }
+                if (o2) {
+                    env.lastOut = last2;
+                    env.intState = int2;
+                    float v2 = o2->eval(env);
+                    last2 = v2;
+                    val = 0.5f * (v1 + v2);
                 }
-
-                if (trackTf.enabled) {
-                    val = trackTf.process(val);
-                }
-
-                if (s >= fftLatency) {
-                    float outVal = my_clamp(val * 0.38f, -1.0f, 1.0f);
-                    m_bakedDrums[t][s - fftLatency] = static_cast<int16_t>(outVal * 32767.0f);
-                }
+                val = my_clamp(val * 0.38f, -1.0f, 1.0f);
+                m_bakedDrums[t][s] = static_cast<int16_t>(val * 32767.0f);
             }
-#ifdef ESP32
-            vTaskDelay(1);
-#endif
+            #ifdef ESP32
+               vTaskDelay(1);
+            #endif
         }
     }
 
@@ -604,7 +435,7 @@ public:
                         if (isMelisma && !m_precompiledVocalPlans.empty()) {
                             VocalSyllablePlan& prev = m_precompiledVocalPlans.back();
                             plan = makeLegatoContinuation(prev);
-                            prev.codaType = 0;
+                            prev.codaType = 0; 
                         } else {
                             const char* syl = isMelisma ? midiToSargamSyllable(midiKey - 60) : rawLyric;
                             plan = compileSanskritSyllable(syl);
@@ -730,7 +561,6 @@ public:
         const bool presetHarmOn = m_harmoniumPresetMode.load();
         const int drumLoop = std::max(48, m_drumLoopTicks.load());
         const int saOffset = m_saSemitone.load();
-        const bool testMode = m_testScopeEnabled.load(std::memory_order_relaxed);
 
         // Snapshot bellows manual state once per block in Q14 (16384 = 1.0)
         const bool posMan = m_bellowsPosManual.load();
@@ -796,9 +626,10 @@ public:
                 }
             }
 
+          
             for (auto& dv : m_drumVoices) {
                 if (!dv.active) continue;
-                if (!dv.ignoreMute && m_trackMuted[dv.trackIdx]) { dv.active = false; continue; }
+                if (m_trackMuted[dv.trackIdx]) { dv.active = false; continue; }
                 const int16_t* pcm = m_bakedDrums[dv.trackIdx];
                 if (pcm && dv.samplePos < m_bakedDrumLen) {
                     fixedMixQ14 += (static_cast<int32_t>(pcm[dv.samplePos++]) >> 1);
@@ -807,12 +638,14 @@ public:
                 }
             }
 
+          
             if (m_droneEnabled.load() && m_droneLoopBuf && m_droneLoopLen > 0) {
                 fixedMixQ14 += (static_cast<int32_t>(m_droneLoopBuf[m_droneReadIdx]) >> 1);
                 if (++m_droneReadIdx >= m_droneLoopLen) m_droneReadIdx = 0;
             }
 
-            if (!m_trackMuted[TRACK_HARMONIUM] || testMode) {
+          
+            if (!m_trackMuted[TRACK_HARMONIUM]) {
                 int32_t harmMixQ14 = 0;
                 for (auto& hv : m_harmVoices) {
                     if (!hv.active) continue;
@@ -820,7 +653,7 @@ public:
                         hv.active = false;
                         continue;
                     }
-                    if ((hv.isAutoPreset || hv.isTestVoice) && hv.held && hv.samplesElapsed >= hv.autoDurSamples) {
+                    if (hv.isAutoPreset && hv.held && hv.samplesElapsed >= hv.autoDurSamples) {
                         hv.held = false;
                     }
                     if (!hv.held) {
@@ -839,11 +672,12 @@ public:
                 fixedMixQ14 += (harmMixQ14 * 3604) >> 14;
             }
 
-            if (m_singVoice.active && (!m_trackMuted[TRACK_SINGING] || testMode)) {
+          
+            if (m_singVoice.active && !m_trackMuted[TRACK_SINGING]) {
                 if (m_singVoice.isAutoPreset && !m_isPlaying.load()) {
                     m_singVoice.active = false;
                 } else {
-                    if (m_singVoice.held && m_singVoice.autoDurSec > 0.0f && m_singVoice.t >= m_singVoice.autoDurSec) {
+                    if (m_singVoice.isAutoPreset && m_singVoice.held && m_singVoice.t >= m_singVoice.autoDurSec) {
                         m_singVoice.held = false;
                         m_singVoice.trel = 0.0f;
                     }
@@ -863,16 +697,6 @@ public:
 
             float totalMix = static_cast<float>(fixedMixQ14) * (1.0f / 16384.0f) + floatMix;
             outMono[i] = fastTanh(totalMix);
-        }
-
-        // Only capture oscilloscope/spectrum samples when the Instrument Test screen is open
-        if (testMode) {
-            uint32_t w = m_scopeWriteIdx.load(std::memory_order_relaxed);
-            for (int i = 0; i < frames; ++i) {
-                m_scopeRing[w & SCOPE_RING_MASK] = outMono[i];
-                ++w;
-            }
-            m_scopeWriteIdx.store(w, std::memory_order_release);
         }
     }
 
@@ -898,7 +722,6 @@ public:
             slot->active = true;
             slot->held = true;
             slot->isAutoPreset = false;
-            slot->isTestVoice = false;
             slot->midiNote = shifted;
             slot->rawMidiNote = midiNote;
             slot->velQ14 = velQ14;
@@ -1131,16 +954,15 @@ private:
 
     struct BakedDrumVoice {
         bool active = false;
-        bool ignoreMute = false;
         int trackIdx = 0;
         int samplePos = 0;
     };
 
+   
     struct HarmoniumVoice {
         bool active = false;
         bool held = false;
         bool isAutoPreset = false;
-        bool isTestVoice = false;
         int midiNote = 60;
         int rawMidiNote = 60;
         int32_t velQ14 = 16384;       // Q14 velocity (16384 = 1.0)
@@ -1627,6 +1449,7 @@ private:
         return sargam[((relSemitone % 12) + 12) % 12];
     }
 
+   
     inline int32_t renderFastHarmoniumSampleQ14(HarmoniumVoice& hv,
                                                 uint32_t lfoPhaseInc,
                                                 bool posMan,
@@ -1637,34 +1460,37 @@ private:
         const int note = my_clamp(hv.midiNote, 0, 127);
         const uint32_t baseInc = m_midiPhaseIncLut[note];
 
+        
         hv.phaseLfo += lfoPhaseInc;
         const int32_t rawWaveQ14 = posMan ? manWaveQ14 : lut.sinUnitQ14(hv.phaseLfo);
         const int32_t lfoQ14     = (rawWaveQ14 * manDepQ14) >> 14;
 
+      
         const int32_t vibModQ14 = (lfoQ14 * 38) >> 14; // 38/16384 = 0.002319 (-4 cents)
         const int32_t vibDelta  = (static_cast<int32_t>(baseInc >> 10) * vibModQ14) >> 4;
         hv.phaseVib     += static_cast<uint32_t>(static_cast<int32_t>(baseInc) - vibDelta);
         hv.phaseBase    += baseInc;
         hv.phaseCeleste += m_midiCelesteIncLut[note];
 
-        const int32_t upperGainQ14 = my_clamp<int32_t>(m_harmBrightQ14 + (lfoQ14 >> 2), 1638, 28672); // brightness + 0.25*lfo
-        const int32_t rawReed1 = lut.sinUnitQ14(hv.phaseVib)
-                                 - (lut.sinUnitQ14(hv.phaseBase << 1) >> 1)
-                                 + ((upperGainQ14 * lut.reedUpperUnitQ14(hv.phaseBase)) >> 14);
+    
+        const int32_t upperGainQ14 = my_clamp<int32_t>(12288 + (lfoQ14 >> 2), 1638, 20480); // 0.75 + 0.25*lfo
+        const int32_t reed1 = lut.sinUnitQ14(hv.phaseVib)
+                            - (lut.sinUnitQ14(hv.phaseBase << 1) >> 1)
+                            + ((upperGainQ14 * lut.reedUpperUnitQ14(hv.phaseBase)) >> 14);
 
-        const int32_t reed1   = (m_harmPrincipalQ14 * rawReed1) >> 14;                   // 8' Principal
-        const int32_t reed2   = (m_harmCelesteQ14   * lut.reedBaseUnitQ14(hv.phaseCeleste)) >> 14; // 8' Celeste
-        const int32_t reed3   = (m_harmBassQ14      * lut.reedBaseUnitQ14(hv.phaseBase >> 1)) >> 14; // 16' Sub-octave
-        const int32_t coupler = (m_harmCouplerQ14   * lut.reedBaseUnitQ14(hv.phaseBase << 1)) >> 14; // 4' Octave coupler
-        const int32_t reedSumQ14 = reed1 + reed2 + reed3 + coupler;
+        const int32_t reed2 = (7373  * lut.reedBaseUnitQ14(hv.phaseCeleste)) >> 14;     // 0.45 * celeste
+        const int32_t reed3 = (10650 * lut.reedBaseUnitQ14(hv.phaseBase >> 1)) >> 14;   // 0.65 * sub-octave
+        const int32_t reedSumQ14 = reed1 + reed2 + reed3;
 
+        
         if (hv.attackEnvQ14 < 16360) {
             hv.attackEnvQ14 += ((16384 - hv.attackEnvQ14) * m_attackStepQ15) >> 15;
         } else {
             hv.attackEnvQ14 = 16384;
         }
 
-        int32_t bellowsEnvQ14 = m_harmPumpBaseQ14 + ((m_harmPumpModQ14 * lfoQ14) >> 14);
+ 
+        int32_t bellowsEnvQ14 = 13435 + ((2949 * lfoQ14) >> 14);
         bellowsEnvQ14 = (bellowsEnvQ14 * pressureGainQ14) >> 14;
 
         int32_t envQ14 = (hv.attackEnvQ14 * hv.relEnvQ14) >> 14;
@@ -1678,12 +1504,11 @@ private:
         return m_midiFreqLut[my_clamp(midiNote, 0, 127)];
     }
 
-    void triggerBakedDrum(int trackIdx, bool ignoreMute = false) {
+    void triggerBakedDrum(int trackIdx) {
         if (trackIdx < 0 || trackIdx >= NUM_BAKED_DRUMS) return;
         auto& v = m_drumVoices[m_nextDrumVoice];
         m_nextDrumVoice = (m_nextDrumVoice + 1) % static_cast<int>(m_drumVoices.size());
         v.active = true;
-        v.ignoreMute = ignoreMute;
         v.trackIdx = trackIdx;
         v.samplePos = 0;
     }
@@ -1699,7 +1524,6 @@ private:
         slot->active = true;
         slot->held = true;
         slot->isAutoPreset = true;
-        slot->isTestVoice = false;
         slot->midiNote = midiNote;
         slot->rawMidiNote = midiNote;
         slot->velQ14 = 14746; // 0.90 in Q14
@@ -1748,16 +1572,6 @@ private:
     int32_t m_attackStepQ15 = 12;
     int32_t m_relDecayQ15 = 32741;
 
-    HarmoniumParams m_harmParams;
-    std::string m_customHarmFormula;
-    int32_t m_harmBassQ14      = 10650; // 0.65
-    int32_t m_harmPrincipalQ14 = 16384; // 1.00
-    int32_t m_harmCelesteQ14   = 7373;  // 0.45
-    int32_t m_harmCouplerQ14   = 0;     // 0.00
-    int32_t m_harmBrightQ14    = 12288; // 0.75
-    int32_t m_harmPumpModQ14   = 2949;  // 0.18
-    int32_t m_harmPumpBaseQ14  = 13435; // 0.82
-
     PrecompiledFormantSlice m_formantLut[256];
     std::vector<VocalSyllablePlan> m_precompiledVocalPlans;
 
@@ -1788,13 +1602,6 @@ private:
     bool m_trackMuted[NUM_TRACKS] = {false};
 
     TransferFunctionFX m_liveHarmoniumTf;
-
-    // Zero-overhead Instrument Test Oscilloscope/FFT Ring Buffer
-    float m_scopeRing[SCOPE_RING_SIZE] = {0.0f};
-    std::atomic<uint32_t> m_scopeWriteIdx{0};
-    std::atomic<bool> m_testScopeEnabled{false};
-    int m_testHarmStep = 0;
-    int m_testSingStep = 0;
 
     std::atomic<int> m_midiInMode{2};
     std::atomic<bool> m_isPlaying{false};
