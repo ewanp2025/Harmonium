@@ -29,11 +29,28 @@ The primary reference hardware tested is the Waveshare ESP32-S3 Touch LCD 7" (80
 Because the Waveshare 7-inch development board used for testing and development does not have an onboard audio DAC or 3.5 mm headphone jack, several output options are implemented:
 
 * **I2S Hardware Audio (Default):** Digital PCM audio streams continuously out of the ESP32-S3 I2S0 peripheral at 22,050 Hz (16-bit stereo). 
-  *Pin mapping:*
+  *Pin mapping: Audio*
   * BCLK (Bit Clock): GPIO 6
   * LRCK / WS (Word Select): GPIO 16
   * DOUT (Serial Data Out): GPIO 15
-  * Can be edited within menu and stored.
+  * VIN: 3.3V
+  * GND: GND
+ 
+  *Pin mapping: Screen*
+  * MOSI (Master Out): GPIO 6
+  * MISO (Master In): GPIO 16
+  * SCLK / SCK (Clock): GPIO 15
+ 
+  * TFT_CS (Chip Select): GPIO 10
+  * TFT_DC (Data/Command): GPIO 4
+  * TFT_RST (Reset): GPIO 5
+  * TFT_BL (Backlight): GPIO 47
+
+  * TOUCH_CS (Touch Chip Select): GPIO 14
+  * TOUCH_IRQ (Touch Interrupt): GPIO 21
+
+  * VIN: 5V
+  * GND: GND
      
   Connect an external I2S DAC breakout (such as a PCM5102A for a 3.5 mm jack, or a MAX98357A for a direct speaker) to these pins for clean, zero-latency physical audio output. 
   > **\*\* Please note** that the above (I2S) has not been tested, as I have not wished to break connections on my test board which lacks an array of GPIO pins.
