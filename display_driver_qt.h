@@ -101,81 +101,42 @@ public:
         return QColor(r, g, b);
     }
 
-    void startWrite() { m_inBatch = true; }
-    void endWrite() {
-        m_inBatch = false;
-        update();
-    }
-
     void fillScreen(uint16_t col) {
         QPainter p(&m_fb);
         p.fillRect(0, 0, m_scrW, m_scrH, from565(col));
-        if (!m_inBatch) update();
+        update();
     }
 
     void fillRect(int x, int y, int w, int h, uint16_t col) {
-        if (w <= 0 || h <= 0) return;
         QPainter p(&m_fb);
         p.fillRect(x, y, w, h, from565(col));
-        if (!m_inBatch) update();
+        update();
     }
 
     void drawRect(int x, int y, int w, int h, uint16_t col) {
-        if (w <= 0 || h <= 0) return;
         QPainter p(&m_fb);
         p.setPen(from565(col));
         p.setBrush(Qt::NoBrush);
         p.drawRect(x, y, w - 1, h - 1);
-        if (!m_inBatch) update();
-    }
-
-    void drawPixel(int x, int y, uint16_t col) {
-        if (x < 0 || x >= m_scrW || y < 0 || y >= m_scrH) return;
-        QPainter p(&m_fb);
-        p.setPen(from565(col));
-        p.drawPoint(x, y);
-        if (!m_inBatch) update();
-    }
-
-    void drawLine(int x0, int y0, int x1, int y1, uint16_t col) {
-        QPainter p(&m_fb);
-        p.setPen(from565(col));
-        p.drawLine(x0, y0, x1, y1);
-        if (!m_inBatch) update();
-    }
-
-    void drawFastVLine(int x, int y, int h, uint16_t col) {
-        if (h <= 0) return;
-        QPainter p(&m_fb);
-        p.fillRect(x, y, 1, h, from565(col));
-        if (!m_inBatch) update();
-    }
-
-    void drawFastHLine(int x, int y, int w, uint16_t col) {
-        if (w <= 0) return;
-        QPainter p(&m_fb);
-        p.fillRect(x, y, w, 1, from565(col));
-        if (!m_inBatch) update();
+        update();
     }
 
     void fillRoundRect(int x, int y, int w, int h, int r, uint16_t col) {
-        if (w <= 0 || h <= 0) return;
         QPainter p(&m_fb);
         p.setRenderHint(QPainter::Antialiasing, !m_monoMode);
         p.setPen(Qt::NoPen);
         p.setBrush(from565(col));
         p.drawRoundedRect(x, y, w, h, r, r);
-        if (!m_inBatch) update();
+        update();
     }
 
     void drawRoundRect(int x, int y, int w, int h, int r, uint16_t col) {
-        if (w <= 0 || h <= 0) return;
         QPainter p(&m_fb);
         p.setRenderHint(QPainter::Antialiasing, !m_monoMode);
         p.setPen(from565(col));
         p.setBrush(Qt::NoBrush);
         p.drawRoundedRect(x, y, w, h, r, r);
-        if (!m_inBatch) update();
+        update();
     }
 
     void setTextColor(uint16_t fg, uint16_t bg = 0) {
@@ -215,7 +176,7 @@ public:
             drawY = y + fm.ascent() - th / 2;
         }
         p.drawText(drawX, drawY, s);
-        if (!m_inBatch) update();
+        update();
     }
 
     bool getTouch(uint16_t* tx, uint16_t* ty) const {
@@ -296,7 +257,6 @@ private:
     int m_scrW = 800;
     int m_scrH = 480;
     bool m_monoMode = false;
-    bool m_inBatch = false;
     QImage m_fb;
     QFont m_uiFont;
     QColor m_textCol = Qt::white;

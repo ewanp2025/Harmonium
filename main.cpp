@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <string>
 #include <vector>
-#include <atomic>
 #include <cctype>
 
 #include "i18n.h"
@@ -79,71 +78,16 @@ static const char* WESTERN_NOTES[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G
 // APPLICATION & MODAL STATE
 
 
-enum AppView { VIEW_LIVE, VIEW_TALA_ED, VIEW_HARM_ED, VIEW_INST_TEST };
+enum AppView { VIEW_LIVE, VIEW_TALA_ED, VIEW_HARM_ED };
 static AppView g_currentView = VIEW_LIVE;
 
-enum ModalState {
-    MODAL_NONE,
-    MODAL_BOL,
-    MODAL_KARTAL,
-    MODAL_SWARA,
-    MODAL_FILE_LOAD,
-    MODAL_SAVE_KBD,
-    MODAL_GPIO_CFG,
-    MODAL_HARM_CFG
-};
+enum ModalState { MODAL_NONE, MODAL_BOL, MODAL_KARTAL, MODAL_SWARA, MODAL_FILE_LOAD, MODAL_SAVE_KBD, MODAL_GPIO_CFG };
 static ModalState g_modalState = MODAL_NONE;
 static int g_editingCellIdx = -1;
 static std::vector<std::string> g_fileList;
 static std::string g_kbdInput;
 static int g_audioOutMode = 1; // 0 = USB, 1 = I2S, 2 = WIFI
 
-static int g_harmPreviewTicks = 0;
-static int g_harmPreviewMidi  = -1;
-
-// Instrument Test Screen State & Transient Capture Buffer (Zero overhead when inactive)
-static int   g_testSelectedInst = 0;
-static bool  g_testAutoCycle    = false;
-static int   g_testAutoTicks    = 0;
-static int   g_testFrameDiv     = 0;
-static float g_specPeakHold[32] = {0.0f};
-
-static float             g_testCapturedWave[SynthEngine::SCOPE_RING_SIZE] = {0.0f};
-static std::atomic<int>  g_testCaptureWriteIdx{512}; // < 512 means armed/capturing
-static std::atomic<bool> g_testCaptureTriggered{false};
-static float             g_testVisualDecay = 0.0f;
-
-static inline void armTestTransientCapture() {
-    g_testCaptureTriggered.store(false, std::memory_order_relaxed);
-    g_testCaptureWriteIdx.store(0, std::memory_order_release);
-    g_testVisualDecay = 1.0f;
-}
-
-static inline void captureTestAudioFrames(const float* monoBuf, int frames) {
-    int wIdx = g_testCaptureWriteIdx.load(std::memory_order_acquire);
-    if (wIdx >= SynthEngine::SCOPE_RING_SIZE) return;
-
-    bool trig = g_testCaptureTriggered.load(std::memory_order_relaxed);
-    for (int i = 0; i < frames; ++i) {
-        float s = monoBuf[i];
-        if (!trig) {
-            if (std::fabs(s) > 0.0015f) {
-                trig = true;
-            } else {
-                continue;
-            }
-        }
-        g_testCapturedWave[wIdx++] = s;
-        if (wIdx >= SynthEngine::SCOPE_RING_SIZE) break;
-    }
-    g_testCaptureTriggered.store(trig, std::memory_order_relaxed);
-    g_testCaptureWriteIdx.store(wIdx, std::memory_order_release);
-}
-
-static void triggerAndCaptureTestInstrument(int trackIdx) {
-    armTestTransientCapture();
-    engine.triggerTestInstrument(trackIdx);
-}
 
 struct BoardGpioConfig {
     int i2sBclk   = I2S_BCLK_PIN;
@@ -220,76 +164,6 @@ static void loadGpioConfig() {
 #endif
 }
 
-static void saveHarmoniumConfig() {
-    const auto& p = engine.getHarmoniumParams();
-#ifdef ESP32
-    File f = LittleFS.open("/harm_cfg.json", "w");
-    if (f) {
-        JsonDocument doc;
-        doc["bass"]      = p.bassStop;
-        doc["principal"] = p.principalStop;
-        doc["celeste"]   = p.celesteStop;
-        doc["coupler"]   = p.couplerStop;
-        doc["cents"]     = p.celesteCents;
-        doc["bright"]    = p.brightness;
-        doc["atk"]       = p.attackRate;
-        doc["rel"]       = p.releaseRate;
-        doc["pump"]      = p.pumpModDepth;
-        serializeJson(doc, f);
-        f.close();
-    }
-#else
-    FILE* fp = std::fopen("harm_cfg.json", "w");
-    if (fp) {
-        std::fprintf(fp, "%.3f %.3f %.3f %.3f %.2f %.3f %.2f %.2f %.3f\n",
-                     p.bassStop, p.principalStop, p.celesteStop, p.couplerStop,
-                     p.celesteCents, p.brightness, p.attackRate, p.releaseRate, p.pumpModDepth);
-        std::fclose(fp);
-    }
-#endif
-}
-
-static void loadHarmoniumConfig() {
-    HarmoniumParams p = engine.getHarmoniumParams();
-#ifdef ESP32
-    File f = LittleFS.open("/harm_cfg.json", "r");
-    if (!f) return;
-    JsonDocument doc;
-    if (!deserializeJson(doc, f)) {
-        p.bassStop      = doc["bass"]      | 0.65f;
-        p.principalStop = doc["principal"] | 1.00f;
-        p.celesteStop   = doc["celeste"]   | 0.45f;
-        p.couplerStop   = doc["coupler"]   | 0.00f;
-        p.celesteCents  = doc["cents"]     | 8.0f;
-        p.brightness    = doc["bright"]    | 0.75f;
-        p.attackRate    = doc["atk"]       | 8.0f;
-        p.releaseRate   = doc["rel"]       | 18.0f;
-        p.pumpModDepth  = doc["pump"]      | 0.18f;
-        engine.applyHarmoniumParams(p);
-    }
-    f.close();
-#else
-    FILE* fp = std::fopen("harm_cfg.json", "r");
-    if (fp) {
-        if (std::fscanf(fp, "%f %f %f %f %f %f %f %f %f",
-                        &p.bassStop, &p.principalStop, &p.celesteStop, &p.couplerStop,
-                        &p.celesteCents, &p.brightness, &p.attackRate, &p.releaseRate, &p.pumpModDepth) == 9) {
-            engine.applyHarmoniumParams(p);
-        }
-        std::fclose(fp);
-    }
-#endif
-}
-
-static void eraseHarmoniumConfigToDefault() {
-#ifdef ESP32
-    LittleFS.remove("/harm_cfg.json");
-#else
-    std::remove("harm_cfg.json");
-#endif
-    engine.resetHarmoniumParamsToDefault();
-}
-
 static void pollBellowsGpioPins() {
     if (!engine.isBellowsPosManual() && !engine.isBellowsDepManual()) return;
 #ifdef ESP32
@@ -360,7 +234,7 @@ static inline bool hitBox(const TouchButton& b, int tx, int ty) {
 }
 
 
-// MULTI-RESOLUTION SCREEN PROFILE
+// MULTI-RESOLUTION SCREEN PROFILE 
 
 
 struct UiLayout {
@@ -369,8 +243,8 @@ struct UiLayout {
     bool hasVisualPiano;
     bool compactLabels;
 
-    // Top Navigation & Hardware Bar (Includes tabTest)
-    TouchButton tabLive, tabTala, tabHarm, tabTest, btnAudio, btnBelPos, btnBelDep, btnGpio, btnLang;
+    // Top Navigation & Hardware Bar
+    TouchButton tabLive, tabTala, tabHarm, btnAudio, btnBelPos, btnBelDep, btnGpio, btnLang;
 
     // Live Transport Row
     TouchButton btnStart, btnPause, btnCount;
@@ -391,6 +265,7 @@ struct UiLayout {
     TouchButton btnRndTala, btnRndSong, btnMidiMode, btnSingMode;
     TouchButton btnHarmMode, btnOctDown, octLbl, btnOctUp, btnTfEn, btnEditMode;
 
+  
     int pianoY, pianoH;
 
     // Footer Bar
@@ -406,8 +281,8 @@ struct UiLayout {
 static const UiLayout LAYOUT_800x480 = {
     800, 480, true, false,
     // Top bar
-    {  6,  6,  72, 34}, { 81,  6,  94, 34}, {178,  6,  94, 34}, {275,  6,  72, 34},
-    {350,  6, 104, 34}, {457,  6,  84, 34}, {544,  6,  84, 34}, {631,  6,  64, 34}, {698,  6,  96, 34},
+    {  6,  6,  90, 34}, {100,  6, 115, 34}, {219,  6, 115, 34}, {338,  6, 112, 34},
+    {454,  6,  86, 34}, {544,  6,  86, 34}, {634,  6,  66, 34}, {704,  6,  90, 34},
     // Transport row
     {  6, 46,  86, 34}, { 96, 46,  72, 34}, {172, 46,  58, 34},
     {236, 46,  28, 34}, {266, 46, 156, 34}, {424, 46,  28, 34},
@@ -438,8 +313,8 @@ static const UiLayout LAYOUT_800x480 = {
 static const UiLayout LAYOUT_320x240 = {
     320, 240, false, true,
     // Top bar (y=2, h=22)
-    {  2,  2,  28, 22}, { 31,  2,  32, 22}, { 64,  2,  32, 22}, { 97,  2,  32, 22},
-    {130,  2,  48, 22}, {180,  2,  34, 22}, {216,  2,  34, 22}, {252,  2,  30, 22}, {284,  2,  34, 22},
+    {  2,  2,  36, 22}, { 40,  2,  42, 22}, { 84,  2,  42, 22}, {128,  2,  52, 22},
+    {182,  2,  34, 22}, {218,  2,  34, 22}, {254,  2,  30, 22}, {286,  2,  32, 22},
     // Transport row (y=26, h=22)
     {  2, 26,  36, 22}, { 40, 26,  32, 22}, { 74, 26,  26, 22},
     {102, 26,  14, 22}, {117, 26,  54, 22}, {172, 26,  14, 22},
@@ -469,8 +344,8 @@ static const UiLayout LAYOUT_320x240 = {
 // Profile 2: 128x64 (Monochrome LCD Keyboard Box Preview)
 static const UiLayout LAYOUT_128x64 = {
     128, 64, false, true,
-    { 1,  1, 20, 11}, {22,  1, 20, 11}, {43,  1, 20, 11}, {64,  1, 20, 11},
-    { 0,  0,  0,  0}, { 0,  0,  0,  0}, { 0,  0,  0,  0}, {85,  1, 20, 11}, {106, 1, 21, 11},
+    { 1,  1, 24, 11}, {26,  1, 24, 11}, {51,  1, 24, 11}, { 0,  0,  0,  0},
+    { 0,  0,  0,  0}, { 0,  0,  0,  0}, {76,  1, 24, 11}, {101, 1, 26, 11},
     { 1, 13, 30, 12}, {32, 13, 24, 12}, { 0,  0,  0,  0},
     {57, 13, 10, 12}, {68, 13, 48, 12}, {117,13, 10, 12},
     { 1, 26, 10, 12}, {12, 26, 62, 12}, {75, 26, 10, 12},
@@ -605,15 +480,12 @@ static void drawTabs() {
     const auto& u = UI();
     const bool compact = u.compactLabels;
 
-    drawButton(u.tabLive, compact ? "LIV" : "<- LIVE",
+    drawButton(u.tabLive, compact ? "LIVE" : "<- BACK",
                g_currentView == VIEW_LIVE ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
-    drawButton(u.tabTala, compact ? (g_langIdx == 1 ? "ताल" : "TAL") : (g_langIdx == 1 ? "ताल ठेका" : "TALA ED"),
+    drawButton(u.tabTala, compact ? (g_langIdx == 1 ? "ताल" : "TALA") : L().tabTalaEditor,
                g_currentView == VIEW_TALA_ED ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
-    drawButton(u.tabHarm, compact ? (g_langIdx == 1 ? "राग" : "RAG") : (g_langIdx == 1 ? "स्वरलिपि" : "HARM ED"),
+    drawButton(u.tabHarm, compact ? (g_langIdx == 1 ? "राग" : "RAGA") : L().tabHarmEditor,
                g_currentView == VIEW_HARM_ED ? rgb565(0, 105, 92) : rgb565(30, 40, 50));
-    drawButton(u.tabTest, compact ? "TST" : "TEST LAB",
-               g_currentView == VIEW_INST_TEST ? rgb565(194, 24, 91) : rgb565(45, 30, 60),
-               rgb565(255, 202, 40), 0xFFFF);
 
 #ifdef ESP32
     const char* fullAud[]  = {g_usbAudio.getStatusLabel(), "OUT: I2S", "OUT: WIFI"};
@@ -905,8 +777,8 @@ static void drawUtilityRow() {
             singLbl = (g_langIdx == 1) ? (singOn ? "गायन:1" : "गायन:0") : (singOn ? "VOICE:ON" : "VOICE:OFF");
         } else {
             singLbl = (g_langIdx == 1)
-            ? (std::string("गायन (VOICE): ") + (singOn ? lang.stateOn : lang.stateOff))
-            : (std::string("SINGING VOICE: ") + (singOn ? lang.stateOn : lang.stateOff));
+                          ? (std::string("गायन (VOICE): ") + (singOn ? lang.stateOn : lang.stateOff))
+                          : (std::string("SINGING VOICE: ") + (singOn ? lang.stateOn : lang.stateOff));
         }
         drawButton(u.btnSingMode, singLbl.c_str(),
                    singOn ? rgb565(194, 24, 91) : rgb565(55, 71, 79),
@@ -940,7 +812,7 @@ static void drawHarmoniumDspRow() {
     drawButton(u.btnTfEn, tfOn ? "FX:ON" : "FX:OFF",
                tfOn ? rgb565(40, 53, 147) : rgb565(51, 51, 51));
 
-    drawButton(u.btnEditMode, compact ? "VOICE" : "HARM VOICING", rgb565(123, 31, 162), rgb565(255, 202, 40));
+    drawButton(u.btnEditMode, compact ? "EDIT" : "EDITORS", rgb565(60, 60, 70));
 }
 
 static void drawTalometerLEDs() {
@@ -1080,428 +952,6 @@ static void drawFooter() {
                               ? (g_midiConnected ? "MIDI:OK" : "MIDI:WAIT")
                               : (g_midiConnected ? lang.midiConnected : lang.midiPcMode);
     g_tft->drawString(midiLbl, u.scrW - 4, u.footerY + u.footerH / 2);
-}
-
-
-// INSTRUMENT TEST SCREEN (OSCILLOSCOPE + FFT SPECTRUM ANALYZER + 24 TRIGGERS)
-
-
-struct InstTestRects {
-    TouchButton infoBanner;
-    TouchButton btnRetrig;
-    TouchButton btnAuto;
-    TouchButton btnStop;
-    TouchButton scopeBox;
-    TouchButton specBox;
-    TouchButton miniPrev, miniTrig, miniNext;
-    int gridStartX, gridStartY, gridStepX, gridStepY, gridW, gridH;
-};
-
-static InstTestRects getInstTestRects() {
-    int p = getActiveProfileIdx();
-    if (p == 1) {
-        // 320x240 SPI Screen Layout
-        return {
-            {  2,  26, 174, 18},
-            {178,  26,  44, 18},
-            {224,  26,  48, 18},
-            {274,  26,  44, 18},
-            {  2,  46, 156, 76},
-            {162,  46, 156, 76},
-            {  0,   0,   0,  0}, {0, 0, 0, 0}, {0, 0, 0, 0},
-            2, 125, 53, 22, 51, 20
-        };
-    } else if (p == 2) {
-        // 128x64 Monochrome Mini Layout
-        return {
-            {  0,   0,   0,  0},
-            {  0,   0,   0,  0},
-            {  0,   0,   0,  0},
-            {  0,   0,   0,  0},
-            {  1,  13,  62, 36},
-            { 65,  13,  62, 36},
-            {  1,  51,  18, 12}, {21, 51, 86, 12}, {109, 51, 18, 12},
-            0, 0, 0, 0, 0, 0
-        };
-    }
-    // 800x480 7" Layout
-    return {
-        {  6,  44, 454, 28},
-        {466,  44, 106, 28},
-        {578,  44, 112, 28},
-        {696,  44,  98, 28},
-        {  6,  76, 390, 166},
-        {404,  76, 390, 166},
-        {  0,   0,   0,   0}, {0, 0, 0, 0}, {0, 0, 0, 0},
-        6, 248, 132, 50, 128, 45
-    };
-}
-
-static TouchButton getTestInstButtonRect(int idx) {
-    const auto r = getInstTestRects();
-    if (r.gridW <= 0 || r.gridH <= 0) return {0, 0, 0, 0};
-    int col = idx % 6;
-    int row = idx / 6;
-    return {r.gridStartX + col * r.gridStepX, r.gridStartY + row * r.gridStepY, r.gridW, r.gridH};
-}
-
-static std::string getTestInstrumentDisplayName(int idx, bool compact) {
-    const auto& trks = BuiltInPresets::getTracks();
-    if (idx < 0 || idx >= static_cast<int>(trks.size())) return "Inst";
-    std::string raw = trks[idx].name;
-    if (raw == "Harmonium_Bellows") return compact ? "Harm" : (g_langIdx == 1 ? "हारमोनियम" : "Harmonium");
-    if (raw == "Singing_Voice")     return compact ? "Voice" : (g_langIdx == 1 ? "गायन (Voice)" : "Singing Voice");
-    std::string tr = L().translateTrackName(raw);
-    return compact ? clipText(tr, 6) : clipText(tr, 14);
-}
-
-static void drawSingleTestInstButton(int i) {
-    if (i < 0 || i >= SynthEngine::NUM_TRACKS) return;
-    TouchButton b = getTestInstButtonRect(i);
-    if (b.w <= 0) return;
-
-    const auto& u = UI();
-    bool selected = (i == g_testSelectedInst);
-    bool isSynth  = (i >= SynthEngine::TRACK_HARMONIUM);
-    uint16_t bg = selected
-                      ? rgb565(194, 24, 91)
-                      : (isSynth ? rgb565(74, 20, 140) : rgb565(37, 45, 56));
-    uint16_t brd = selected
-                       ? rgb565(255, 235, 59)
-                       : (isSynth ? rgb565(186, 104, 200) : rgb565(90, 105, 120));
-
-    char lbl[40];
-    if (u.compactLabels) {
-        std::snprintf(lbl, sizeof(lbl), "%d:%s", i + 1, getTestInstrumentDisplayName(i, true).c_str());
-    } else {
-        std::snprintf(lbl, sizeof(lbl), "%02d. %s", i + 1, getTestInstrumentDisplayName(i, false).c_str());
-    }
-    drawButton(b, lbl, bg, brd, 0xFFFF);
-}
-
-// Fast 512-point in-place Radix-2 FFT (executes only when VIEW_INST_TEST is active)
-static void computeTestFft512(const float* timeSamples, float* outMagBins, float& outPeakHz, float& outPeakDb) {
-    static constexpr int N = 512;
-    static bool s_tablesInit = false;
-    static uint16_t s_bitRev[N];
-    static float s_hann[N];
-    static float s_cosLut[N / 2];
-    static float s_sinLut[N / 2];
-
-    if (!s_tablesInit) {
-        for (int i = 0; i < N; ++i) {
-            uint16_t rev = 0;
-            for (int j = 0; j < 9; ++j) {
-                if (i & (1 << j)) rev |= (1 << (8 - j));
-            }
-            s_bitRev[i] = rev;
-            s_hann[i] = 0.5f * (1.0f - std::cos(2.0f * M_PI_F * static_cast<float>(i) / static_cast<float>(N - 1)));
-        }
-        for (int k = 0; k < N / 2; ++k) {
-            float ang = -2.0f * M_PI_F * static_cast<float>(k) / static_cast<float>(N);
-            s_cosLut[k] = std::cos(ang);
-            s_sinLut[k] = std::sin(ang);
-        }
-        s_tablesInit = true;
-    }
-
-    float re[N];
-    float im[N];
-    for (int i = 0; i < N; ++i) {
-        re[i] = timeSamples[i] * s_hann[i];
-        im[i] = 0.0f;
-    }
-
-    for (int i = 0; i < N; ++i) {
-        int j = s_bitRev[i];
-        if (i < j) {
-            std::swap(re[i], re[j]);
-            std::swap(im[i], im[j]);
-        }
-    }
-
-    for (int len = 2; len <= N; len <<= 1) {
-        int half = len >> 1;
-        int step = N / len;
-        for (int i = 0; i < N; i += len) {
-            for (int j = 0; j < half; ++j) {
-                int twIdx = j * step;
-                float wr = s_cosLut[twIdx];
-                float wi = s_sinLut[twIdx];
-                float tr = re[i + j + half] * wr - im[i + j + half] * wi;
-                float ti = re[i + j + half] * wi + im[i + j + half] * wr;
-                re[i + j + half] = re[i + j] - tr;
-                im[i + j + half] = im[i + j] - ti;
-                re[i + j] += tr;
-                im[i + j] += ti;
-            }
-        }
-    }
-
-    int bestBin = 1;
-    float maxMag = 1e-6f;
-    outMagBins[0] = 0.0f;
-    for (int k = 1; k < N / 2; ++k) {
-        float mag = std::sqrt(re[k] * re[k] + im[k] * im[k]) * (4.0f / static_cast<float>(N));
-        outMagBins[k] = mag;
-        if (mag > maxMag) {
-            maxMag = mag;
-            bestBin = k;
-        }
-    }
-
-    // Parabolic interpolation around peak bin for accurate Hz readout
-    float binOffset = 0.0f;
-    if (bestBin > 1 && bestBin < (N / 2 - 1)) {
-        float m0 = outMagBins[bestBin - 1];
-        float m1 = outMagBins[bestBin];
-        float m2 = outMagBins[bestBin + 1];
-        float denom = (m0 - 2.0f * m1 + m2);
-        if (std::fabs(denom) > 1e-6f) {
-            binOffset = 0.5f * (m0 - m2) / denom;
-        }
-    }
-
-    float binHz = engine.getSampleRate() / static_cast<float>(N);
-    outPeakHz = (maxMag > 0.002f) ? ((static_cast<float>(bestBin) + binOffset) * binHz) : 0.0f;
-    outPeakDb = 20.0f * std::log10(std::max(maxMag, 1e-4f));
-}
-
-static void drawInstTestHeaderAndButtons() {
-    const auto& u = UI();
-    const auto r = getInstTestRects();
-
-    if (r.miniTrig.w > 0) {
-        drawButton(r.miniPrev, "<", rgb565(55, 71, 79));
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%02d:%s", g_testSelectedInst + 1,
-                      getTestInstrumentDisplayName(g_testSelectedInst, true).c_str());
-        drawButton(r.miniTrig, buf, rgb565(194, 24, 91), rgb565(255, 202, 40));
-        drawButton(r.miniNext, ">", rgb565(55, 71, 79));
-        return;
-    }
-
-    drawButton(r.btnRetrig, u.compactLabels ? "PLAY" : "▶ TRIGGER",
-               rgb565(0, 121, 107), rgb565(0, 229, 255));
-    drawButton(r.btnAuto,
-               u.compactLabels ? (g_testAutoCycle ? "AUT:1" : "AUT:0")
-                               : (g_testAutoCycle ? "AUTO CYCLE: ON" : "AUTO CYCLE: OFF"),
-               g_testAutoCycle ? rgb565(230, 81, 0) : rgb565(55, 71, 79),
-               rgb565(255, 202, 40));
-    drawButton(r.btnStop, u.compactLabels ? "STOP" : "■ SILENCE",
-               rgb565(183, 28, 28), 0xFFFF);
-
-    for (int i = 0; i < SynthEngine::NUM_TRACKS; ++i) {
-        drawSingleTestInstButton(i);
-    }
-}
-
-static void updateInstTestVisualizers() {
-    const auto& u = UI();
-    const auto r = getInstTestRects();
-
-    float samples[SynthEngine::SCOPE_RING_SIZE];
-    engine.getScopeSamples(samples, SynthEngine::SCOPE_RING_SIZE);
-
-    float liveMaxAbs = 0.0f;
-    for (int i = 0; i < SynthEngine::SCOPE_RING_SIZE; ++i) {
-        float a = std::fabs(samples[i]);
-        if (a > liveMaxAbs) liveMaxAbs = a;
-    }
-
-    // Use live ring buffer when sustained sound is active; otherwise display
-    // the captured 512-sample transient onset with smooth visual decay so
-    // short 20ms hits (Ka, Ti, Re, Kartal Closed, Ra, Ki) are clearly visible.
-    float maxAbs = liveMaxAbs;
-    if (liveMaxAbs >= 0.025f) {
-        std::memcpy(g_testCapturedWave, samples, sizeof(samples));
-        g_testVisualDecay = 1.0f;
-    } else if (g_testVisualDecay > 0.04f && g_testCaptureWriteIdx.load(std::memory_order_acquire) > 0) {
-        maxAbs = 0.0f;
-        for (int i = 0; i < SynthEngine::SCOPE_RING_SIZE; ++i) {
-            samples[i] = g_testCapturedWave[i] * g_testVisualDecay;
-            float a = std::fabs(samples[i]);
-            if (a > maxAbs) maxAbs = a;
-        }
-        g_testVisualDecay *= 0.88f; // Smooth ~500ms visual persistence decay
-    }
-
-    float magBins[256];
-    float peakHz = 0.0f;
-    float peakDb = -80.0f;
-    computeTestFft512(samples, magBins, peakHz, peakDb);
-
-    g_tft->startWrite();
-
-    // 1. Update Info Banner (Selected Instrument + Peak Frequency + Peak Amplitude)
-    if (r.infoBanner.w > 0) {
-        char infoBuf[96];
-        std::string instName = getTestInstrumentDisplayName(g_testSelectedInst, u.compactLabels);
-        if (u.compactLabels) {
-            std::snprintf(infoBuf, sizeof(infoBuf), "#%02d %s | %.0fHz",
-                          g_testSelectedInst + 1, instName.c_str(), peakHz);
-        } else {
-            std::snprintf(infoBuf, sizeof(infoBuf), "TEST #%02d: %s  |  Peak: %.0f Hz (%.1f dB)  |  Lvl: %d%%",
-                          g_testSelectedInst + 1, instName.c_str(), peakHz, peakDb,
-                          static_cast<int>(std::min(100.0f, maxAbs * 100.0f)));
-        }
-        drawButton(r.infoBanner, infoBuf, rgb565(15, 25, 38), rgb565(0, 229, 255), rgb565(0, 229, 255));
-    }
-
-    // 2. Render Oscilloscope (Left Box)
-    const int sx = r.scopeBox.x;
-    const int sy = r.scopeBox.y;
-    const int sw = r.scopeBox.w;
-    const int sh = r.scopeBox.h;
-    const int headerPad = (u.scrH >= 400) ? 18 : (u.scrH >= 200 ? 12 : 0);
-
-    g_tft->fillRect(sx + 1, sy + 1, sw - 2, sh - 2, rgb565(10, 14, 20));
-    g_tft->drawRect(sx, sy, sw, sh, rgb565(0, 172, 193));
-
-    int plotY0 = sy + headerPad + 2;
-    int plotH  = sh - headerPad - 4;
-    int midY   = plotY0 + plotH / 2;
-
-    g_tft->drawFastHLine(sx + 2, midY, sw - 4, rgb565(30, 50, 65));
-    g_tft->drawFastHLine(sx + 2, plotY0 + plotH / 4, sw - 4, rgb565(20, 32, 42));
-    g_tft->drawFastHLine(sx + 2, plotY0 + (plotH * 3) / 4, sw - 4, rgb565(20, 32, 42));
-    g_tft->drawFastVLine(sx + sw / 2, plotY0, plotH, rgb565(30, 50, 65));
-
-    if (headerPad > 0) {
-        g_tft->setTextColor(rgb565(0, 229, 255), rgb565(10, 14, 20));
-        g_tft->setTextDatum(ML_DATUM);
-        g_tft->drawString(u.compactLabels ? "OSCILLOSCOPE" : "OSCILLOSCOPE (TIME DOMAIN)", sx + 6, sy + headerPad / 2 + 1);
-    }
-
-    int trigOffset = 0;
-    for (int i = 16; i < 240; ++i) {
-        if (samples[i - 1] < 0.0f && samples[i] >= 0.0f) {
-            trigOffset = i;
-            break;
-        }
-    }
-
-    int traceW = sw - 4;
-    int availSamples = std::min(256, SynthEngine::SCOPE_RING_SIZE - trigOffset);
-    float gainScale = (maxAbs > 0.005f && maxAbs < 0.35f) ? std::min(2.5f, 0.45f / maxAbs) : 1.0f;
-
-    int prevX = sx + 2;
-    int prevY = midY;
-    for (int x = 0; x < traceW; ++x) {
-        int sIdx = trigOffset + (x * (availSamples - 1)) / std::max(1, traceW - 1);
-        float v = std::clamp(samples[sIdx] * gainScale, -1.0f, 1.0f);
-        int py = midY - static_cast<int>(v * (plotH * 0.45f));
-        py = std::clamp(py, plotY0, plotY0 + plotH - 1);
-        int px = sx + 2 + x;
-        if (x > 0) {
-            g_tft->drawLine(prevX, prevY, px, py, rgb565(0, 255, 180));
-            if (u.scrH >= 400 && py + 1 < plotY0 + plotH) {
-                g_tft->drawLine(prevX, prevY + 1, px, py + 1, rgb565(0, 140, 100));
-            }
-        }
-        prevX = px;
-        prevY = py;
-    }
-
-    // 3. Render Spectrum Analyzer (Right Box)
-    const int fx = r.specBox.x;
-    const int fy = r.specBox.y;
-    const int fw = r.specBox.w;
-    const int fh = r.specBox.h;
-
-    g_tft->fillRect(fx + 1, fy + 1, fw - 2, fh - 2, rgb565(10, 14, 20));
-    g_tft->drawRect(fx, fy, fw, fh, rgb565(255, 179, 0));
-
-    int fPlotY0   = fy + headerPad + 2;
-    int labelPadB = (u.scrH >= 400) ? 14 : 2;
-    int fPlotH    = fh - headerPad - labelPadB - 2;
-    int fBotY     = fPlotY0 + fPlotH;
-
-    g_tft->drawFastHLine(fx + 2, fPlotY0 + fPlotH / 3, fw - 4, rgb565(22, 32, 42));
-    g_tft->drawFastHLine(fx + 2, fPlotY0 + (fPlotH * 2) / 3, fw - 4, rgb565(22, 32, 42));
-
-    if (headerPad > 0) {
-        g_tft->setTextColor(rgb565(255, 202, 40), rgb565(10, 14, 20));
-        g_tft->setTextDatum(ML_DATUM);
-        g_tft->drawString(u.compactLabels ? "SPECTRUM (FFT)" : "SPECTRUM ANALYZER (512-PT FFT)", fx + 6, fy + headerPad / 2 + 1);
-    }
-
-    static const int kBandStart[33] = {
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 21, 24,
-        28, 32, 37, 43, 50, 58, 67, 77, 88, 100, 114, 130, 148, 168, 190, 214, 245
-    };
-    const int numBands = (u.scrW < 160) ? 16 : 32;
-    const int innerW   = fw - 8;
-    const int stepW    = std::max(2, innerW / numBands);
-    const int barW     = std::max(1, stepW - (u.scrW >= 400 ? 3 : 1));
-    const int startBarX = fx + (fw - numBands * stepW) / 2;
-
-    for (int b = 0; b < numBands; ++b) {
-        int mapIdx = (numBands == 16) ? (b * 2) : b;
-        int b0 = kBandStart[mapIdx];
-        int b1 = (numBands == 16) ? kBandStart[mapIdx + 2] : kBandStart[mapIdx + 1];
-
-        float bandPeak = 0.0f;
-        for (int k = b0; k < b1 && k < 256; ++k) {
-            if (magBins[k] > bandPeak) bandPeak = magBins[k];
-        }
-
-        float db = 20.0f * std::log10(std::max(bandPeak, 1e-4f));
-        float norm = std::clamp((db + 52.0f) / 52.0f, 0.0f, 1.0f);
-
-        if (norm >= g_specPeakHold[b]) {
-            g_specPeakHold[b] = norm;
-        } else {
-            g_specPeakHold[b] = std::max(0.0f, g_specPeakHold[b] - 0.035f);
-        }
-
-        int barH  = static_cast<int>(norm * fPlotH);
-        int peakH = static_cast<int>(g_specPeakHold[b] * fPlotH);
-        int bx    = startBarX + b * stepW;
-
-        if (barH > 0) {
-            int midSplit = (fPlotH * 60) / 100;
-            int topSplit = (fPlotH * 85) / 100;
-
-            int hGreen = std::min(barH, midSplit);
-            if (hGreen > 0) {
-                g_tft->fillRect(bx, fBotY - hGreen, barW, hGreen, rgb565(0, 210, 140));
-            }
-            if (barH > midSplit) {
-                int hYellow = std::min(barH, topSplit) - midSplit;
-                g_tft->fillRect(bx, fBotY - midSplit - hYellow, barW, hYellow, rgb565(255, 202, 40));
-            }
-            if (barH > topSplit) {
-                int hRed = barH - topSplit;
-                g_tft->fillRect(bx, fBotY - barH, barW, hRed, rgb565(255, 64, 129));
-            }
-        }
-
-        if (peakH > 2) {
-            int py = std::max(fPlotY0, fBotY - peakH);
-            g_tft->fillRect(bx, py, barW, 2, 0xFFFF);
-        }
-    }
-
-    if (u.scrH >= 400) {
-        g_tft->setTextColor(rgb565(160, 175, 190), rgb565(10, 14, 20));
-        g_tft->setTextDatum(BC_DATUM);
-        g_tft->drawString("100Hz", fx + 38,  fy + fh - 1);
-        g_tft->drawString("500Hz", fx + 125, fy + fh - 1);
-        g_tft->drawString("1.5k",  fx + 215, fy + fh - 1);
-        g_tft->drawString("4kHz",  fx + 295, fy + fh - 1);
-        g_tft->drawString("9kHz",  fx + 362, fy + fh - 1);
-    }
-
-    g_tft->endWrite();
-}
-
-static void drawInstTestScreen() {
-    drawInstTestHeaderAndButtons();
-    updateInstTestVisualizers();
-    if (UI().scrH >= 400) {
-        drawFooter();
-    }
 }
 
 
@@ -1713,90 +1163,6 @@ static void drawGpioModal() {
     drawButton({u.scrW / 2 + 10,        botY, botW, botH}, "CLOSE",        rgb565(183, 28, 28));
 }
 
-static void drawHarmConfigModal() {
-    const auto& u = UI();
-    const auto& p = engine.getHarmoniumParams();
-    int padX = u.compactLabels ? 4 : 36;
-    int padY = u.compactLabels ? 24 : 42;
-    int mw   = u.scrW - padX * 2;
-    int mh   = u.scrH - padY - 4;
-
-    g_tft->fillRect(padX, padY, mw, mh, rgb565(15, 20, 25));
-    g_tft->drawRect(padX, padY, mw, mh, rgb565(0, 229, 255));
-    g_tft->setTextColor(rgb565(255, 202, 40), rgb565(15, 20, 25));
-    g_tft->setTextDatum(MC_DATUM);
-    g_tft->drawString(u.compactLabels ? "HARMONIUM STOPS & VOICING"
-                                      : "HARMONIUM REED STOPS, COUPLER & BELLOWS VOICING",
-                      u.scrW / 2, padY + (u.compactLabels ? 9 : 18));
-
-    const char* labels[9] = {
-        "16' Bass Stop (Kharaj)",
-        "8' Principal (Nar)",
-        "8' Celeste (Mada)",
-        "4' Octave Coupler",
-        "Celeste Detune (Cents)",
-        "Jali Lid Brightness",
-        "Bellows Attack Speed",
-        "Key Release Damping",
-        "Bellows Tremolo Depth"
-    };
-    const char* shortLabels[9] = {
-        "16' Bass", "8' Princ", "8' Celest", "4' Couplr",
-        "Detune c", "Lid Brt",  "Atk Rate",  "Rel Rate", "Pump Mod"
-    };
-    float vals[9] = {
-        p.bassStop, p.principalStop, p.celesteStop, p.couplerStop,
-        p.celesteCents, p.brightness, p.attackRate, p.releaseRate, p.pumpModDepth
-    };
-
-    int colW   = (mw - 12) / 2;
-    int startY = padY + (u.compactLabels ? 20 : 38);
-    int stepY  = u.compactLabels ? 26 : 52;
-    int rowH   = u.compactLabels ? 22 : 38;
-
-    for (int i = 0; i < 9; ++i) {
-        int col = (i >= 5) ? 1 : 0;
-        int row = (i >= 5) ? (i - 5) : i;
-        int cx  = padX + 6 + col * colW;
-        int ry  = startY + row * stepY;
-
-        g_tft->setTextColor(0xFFFF, rgb565(15, 20, 25));
-        g_tft->setTextDatum(ML_DATUM);
-        g_tft->drawString(u.compactLabels ? shortLabels[i] : labels[i], cx, ry + rowH / 2);
-
-        int btnW   = u.compactLabels ? 20 : 36;
-        int valW   = u.compactLabels ? 36 : 64;
-        int rightX = cx + colW - 6;
-        TouchButton btnPlus  = {rightX - btnW,                ry, btnW, rowH};
-        TouchButton valBox   = {rightX - btnW - valW - 2,     ry, valW, rowH};
-        TouchButton btnMinus = {rightX - btnW * 2 - valW - 4, ry, btnW, rowH};
-
-        char vBuf[24];
-        if (i == 4)      std::snprintf(vBuf, sizeof(vBuf), "+%.0fc", vals[i]);
-        else if (i >= 6 && i <= 7) std::snprintf(vBuf, sizeof(vBuf), "%.0f", vals[i]);
-        else             std::snprintf(vBuf, sizeof(vBuf), "%d%%", static_cast<int>(std::lround(vals[i] * 100.0f)));
-
-        drawButton(btnMinus, "-", rgb565(55, 71, 79));
-        drawButton(valBox, vBuf, rgb565(37, 40, 48), rgb565(0, 229, 255));
-        drawButton(btnPlus, "+", rgb565(55, 71, 79));
-    }
-
-    if (!u.compactLabels) {
-        std::string fPreview = "Formula: " + clipText(engine.getActiveHarmoniumFormula(), 78) + "...";
-        g_tft->setTextColor(rgb565(0, 229, 255), rgb565(15, 20, 25));
-        g_tft->setTextDatum(MC_DATUM);
-        g_tft->drawString(fPreview.c_str(), u.scrW / 2, padY + mh - 66);
-    }
-
-    int botY = u.compactLabels ? (u.scrH - 28) : (padY + mh - 46);
-    int botH = u.compactLabels ? 22 : 38;
-    int botW = u.compactLabels ? 96 : 180;
-    int cx   = u.scrW / 2;
-    drawButton({cx - botW - botW / 2 - 8, botY, botW, botH}, u.compactLabels ? "SAVE"  : "SAVE SETTINGS", rgb565(46, 125, 50));
-    drawButton({cx - botW / 2,            botY, botW, botH}, u.compactLabels ? "RESET" : "RESET DEFAULT", rgb565(230, 81, 0));
-    drawButton({cx + botW / 2 + 8,        botY, botW, botH}, u.compactLabels ? "CLOSE" : "CLOSE",         rgb565(183, 28, 28));
-}
-
 static void redrawEntireScreen() {
 #ifndef ESP32
     g_tft->setWindowTitle(QString::fromUtf8(L().windowTitle));
@@ -1816,15 +1182,10 @@ static void redrawEntireScreen() {
         drawGpioModal();
         return;
     }
-    if (g_modalState == MODAL_HARM_CFG) {
-        drawHarmConfigModal();
-        return;
-    }
 
     if (g_modalState != MODAL_NONE) {
         if (g_currentView == VIEW_TALA_ED) drawTalaEditor();
         else if (g_currentView == VIEW_HARM_ED) drawHarmEditor();
-        else if (g_currentView == VIEW_INST_TEST) drawInstTestScreen();
         drawModalSelector();
         return;
     }
@@ -1842,28 +1203,7 @@ static void redrawEntireScreen() {
         drawTalaEditor();
     } else if (g_currentView == VIEW_HARM_ED) {
         drawHarmEditor();
-    } else if (g_currentView == VIEW_INST_TEST) {
-        drawInstTestScreen();
     }
-}
-
-static void switchAppView(AppView nextView) {
-    if (g_currentView == nextView) return;
-    if (g_currentView == VIEW_INST_TEST && nextView != VIEW_INST_TEST) {
-        engine.setTestScopeEnabled(false);
-        engine.silenceAllVoices();
-        g_testAutoCycle = false;
-        g_testVisualDecay = 0.0f;
-        g_testCaptureWriteIdx.store(SynthEngine::SCOPE_RING_SIZE, std::memory_order_release);
-    } else if (nextView == VIEW_INST_TEST) {
-        std::memset(g_specPeakHold, 0, sizeof(g_specPeakHold));
-        std::memset(g_testCapturedWave, 0, sizeof(g_testCapturedWave));
-        g_testVisualDecay = 0.0f;
-        engine.setTestScopeEnabled(true);
-        g_testAutoTicks = 0;
-    }
-    g_currentView = nextView;
-    redrawEntireScreen();
 }
 
 
@@ -1875,19 +1215,12 @@ static bool wasTouching = false;
 static void esp32LoopTick() {
     pollBellowsGpioPins();
 
-    if (g_harmPreviewTicks > 0) {
-        if (--g_harmPreviewTicks == 0 && g_harmPreviewMidi >= 0) {
-            engine.noteOff(g_harmPreviewMidi);
-            g_harmPreviewMidi = -1;
-        }
-    }
-
     const auto& u = UI();
     uint16_t tx = 0, ty = 0;
     bool touching = g_tft->getTouch(&tx, &ty);
 
     if (touching && !wasTouching) {
-        if (g_modalState == MODAL_GPIO_CFG) {
+if (g_modalState == MODAL_GPIO_CFG) {
             int padY   = u.compactLabels ? 24 : 44;
             int startY = padY + (u.compactLabels ? 18 : 46);
             int stepY  = u.compactLabels ? 23 : 40;
@@ -1918,65 +1251,6 @@ static void esp32LoopTick() {
                 saveGpioConfig();
                 g_modalState = MODAL_NONE;
             } else if (hitBox({u.scrW / 2 + 10, botY, botW, botH}, tx, ty)) {
-                g_modalState = MODAL_NONE;
-            }
-            redrawEntireScreen();
-
-        } else if (g_modalState == MODAL_HARM_CFG) {
-            HarmoniumParams p = engine.getHarmoniumParams();
-            int padX   = u.compactLabels ? 4 : 36;
-            int padY   = u.compactLabels ? 24 : 42;
-            int mw     = u.scrW - padX * 2;
-            int mh     = u.scrH - padY - 4;
-            int colW   = (mw - 12) / 2;
-            int startY = padY + (u.compactLabels ? 20 : 38);
-            int stepY  = u.compactLabels ? 26 : 52;
-            int rowH   = u.compactLabels ? 22 : 38;
-            int btnW   = u.compactLabels ? 20 : 36;
-            int valW   = u.compactLabels ? 36 : 64;
-
-            float* ptrs[9] = {
-                &p.bassStop, &p.principalStop, &p.celesteStop, &p.couplerStop,
-                &p.celesteCents, &p.brightness, &p.attackRate, &p.releaseRate, &p.pumpModDepth
-            };
-            const float steps[9] = {0.05f, 0.05f, 0.05f, 0.05f, 1.0f, 0.05f, 1.0f, 1.0f, 0.02f};
-
-            bool changed = false;
-            for (int i = 0; i < 9; ++i) {
-                int col = (i >= 5) ? 1 : 0;
-                int row = (i >= 5) ? (i - 5) : i;
-                int cx  = padX + 6 + col * colW;
-                int ry  = startY + row * stepY;
-                int rightX = cx + colW - 6;
-
-                TouchButton btnPlus  = {rightX - btnW,                ry, btnW, rowH};
-                TouchButton btnMinus = {rightX - btnW * 2 - valW - 4, ry, btnW, rowH};
-                if (hitBox(btnMinus, tx, ty)) { *ptrs[i] -= steps[i]; changed = true; }
-                else if (hitBox(btnPlus, tx, ty)) { *ptrs[i] += steps[i]; changed = true; }
-            }
-            if (changed) {
-                engine.applyHarmoniumParams(p);
-                if (!engine.isPlaying()) {
-                    if (g_harmPreviewMidi >= 0) engine.noteOff(g_harmPreviewMidi);
-                    g_harmPreviewMidi = 60 + engine.getSaSemitone();
-                    engine.noteOn(g_harmPreviewMidi, 100);
-                    g_harmPreviewTicks = 24;
-                }
-            }
-
-            int botY = u.compactLabels ? (u.scrH - 28) : (padY + mh - 46);
-            int botH = u.compactLabels ? 22 : 38;
-            int botW = u.compactLabels ? 96 : 180;
-            int cx   = u.scrW / 2;
-            if (hitBox({cx - botW - botW / 2 - 8, botY, botW, botH}, tx, ty)) {
-                if (g_harmPreviewMidi >= 0) { engine.noteOff(g_harmPreviewMidi); g_harmPreviewMidi = -1; g_harmPreviewTicks = 0; }
-                saveHarmoniumConfig();
-                g_modalState = MODAL_NONE;
-            } else if (hitBox({cx - botW / 2, botY, botW, botH}, tx, ty)) {
-                if (g_harmPreviewMidi >= 0) { engine.noteOff(g_harmPreviewMidi); g_harmPreviewMidi = -1; g_harmPreviewTicks = 0; }
-                eraseHarmoniumConfigToDefault();
-            } else if (hitBox({cx + botW / 2 + 8, botY, botW, botH}, tx, ty)) {
-                if (g_harmPreviewMidi >= 0) { engine.noteOff(g_harmPreviewMidi); g_harmPreviewMidi = -1; g_harmPreviewTicks = 0; }
                 g_modalState = MODAL_NONE;
             }
             redrawEntireScreen();
@@ -2131,59 +1405,6 @@ static void esp32LoopTick() {
         } else if (hitBox(u.btnLang, tx, ty)) {
             g_langIdx = (g_langIdx + 1) % static_cast<int>(I18n::getLanguages().size());
             redrawEntireScreen();
-        } else if (hitBox(u.tabLive, tx, ty)) {
-            switchAppView(VIEW_LIVE);
-        } else if (hitBox(u.tabTala, tx, ty)) {
-            switchAppView(VIEW_TALA_ED);
-        } else if (hitBox(u.tabHarm, tx, ty)) {
-            switchAppView(VIEW_HARM_ED);
-        } else if (hitBox(u.tabTest, tx, ty)) {
-            switchAppView(VIEW_INST_TEST);
-        } else if (g_currentView == VIEW_INST_TEST) {
-            const auto r = getInstTestRects();
-            if (r.miniTrig.w > 0) {
-                if (hitBox(r.miniPrev, tx, ty)) {
-                    g_testSelectedInst = (g_testSelectedInst + SynthEngine::NUM_TRACKS - 1) % SynthEngine::NUM_TRACKS;
-                    triggerAndCaptureTestInstrument(g_testSelectedInst);
-                    drawInstTestHeaderAndButtons();
-                } else if (hitBox(r.miniNext, tx, ty)) {
-                    g_testSelectedInst = (g_testSelectedInst + 1) % SynthEngine::NUM_TRACKS;
-                    triggerAndCaptureTestInstrument(g_testSelectedInst);
-                    drawInstTestHeaderAndButtons();
-                } else if (hitBox(r.miniTrig, tx, ty)) {
-                    triggerAndCaptureTestInstrument(g_testSelectedInst);
-                }
-            } else if (hitBox(r.btnRetrig, tx, ty) || hitBox(r.infoBanner, tx, ty)) {
-                triggerAndCaptureTestInstrument(g_testSelectedInst);
-            } else if (hitBox(r.btnAuto, tx, ty)) {
-                g_testAutoCycle = !g_testAutoCycle;
-                g_testAutoTicks = 0;
-                if (g_testAutoCycle) {
-                    triggerAndCaptureTestInstrument(g_testSelectedInst);
-                }
-                drawButton(r.btnAuto,
-                           u.compactLabels ? (g_testAutoCycle ? "AUT:1" : "AUT:0")
-                                           : (g_testAutoCycle ? "AUTO CYCLE: ON" : "AUTO CYCLE: OFF"),
-                           g_testAutoCycle ? rgb565(230, 81, 0) : rgb565(55, 71, 79),
-                           rgb565(255, 202, 40));
-            } else if (hitBox(r.btnStop, tx, ty)) {
-                g_testAutoCycle = false;
-                g_testVisualDecay = 0.0f;
-                std::memset(g_testCapturedWave, 0, sizeof(g_testCapturedWave));
-                engine.silenceAllVoices();
-                drawInstTestHeaderAndButtons();
-            } else {
-                for (int i = 0; i < SynthEngine::NUM_TRACKS; ++i) {
-                    if (hitBox(getTestInstButtonRect(i), tx, ty)) {
-                        int prevInst = g_testSelectedInst;
-                        g_testSelectedInst = i;
-                        triggerAndCaptureTestInstrument(i);
-                        if (prevInst != i) drawSingleTestInstButton(prevInst);
-                        drawSingleTestInstButton(i);
-                        break;
-                    }
-                }
-            }
         } else if (g_currentView == VIEW_LIVE) {
             int pianoMidi = hitTestPiano(tx, ty);
             if (pianoMidi >= 0) {
@@ -2195,7 +1416,9 @@ static void esp32LoopTick() {
                     drawSwaraPopup();
                 }
             } else {
-                if (hitBox(u.btnStart, tx, ty)) {
+                if (hitBox(u.tabTala, tx, ty)) { g_currentView = VIEW_TALA_ED; redrawEntireScreen(); }
+                else if (hitBox(u.tabHarm, tx, ty)) { g_currentView = VIEW_HARM_ED; redrawEntireScreen(); }
+                else if (hitBox(u.btnStart, tx, ty)) {
                     if (!engine.isPlaying()) engine.startWithCountdown(g_useCountdown);
                     else engine.stopPlayback();
                     drawTopTransportRow();
@@ -2281,7 +1504,7 @@ static void esp32LoopTick() {
                     engine.setTfEnabled(!engine.isTfEnabled());
                     drawHarmoniumDspRow();
                 } else if (hitBox(u.btnEditMode, tx, ty)) {
-                    g_modalState = MODAL_HARM_CFG;
+                    g_currentView = VIEW_TALA_ED;
                     redrawEntireScreen();
                 } else {
                     for (int i = 0; i < SynthEngine::NUM_TRACKS; ++i) {
@@ -2298,7 +1521,11 @@ static void esp32LoopTick() {
                 }
             }
         } else if (g_currentView == VIEW_TALA_ED || g_currentView == VIEW_HARM_ED) {
-            if (hitBox(u.btnEdPrev, tx, ty)) {
+            if (hitBox(u.tabLive, tx, ty)) { g_currentView = VIEW_LIVE; redrawEntireScreen(); }
+            else if (hitBox(u.tabTala, tx, ty)) { g_currentView = VIEW_TALA_ED; redrawEntireScreen(); }
+            else if (hitBox(u.tabHarm, tx, ty)) { g_currentView = VIEW_HARM_ED; redrawEntireScreen(); }
+
+            else if (hitBox(u.btnEdPrev, tx, ty)) {
                 if (g_currentView == VIEW_TALA_ED) engine.selectTala(engine.getSelectedTala() - 1);
                 else engine.selectHarmoniumSong(engine.getSelectedSong() - 1);
                 redrawEntireScreen();
@@ -2439,7 +1666,6 @@ static void esp32LoopTick() {
 
     wasTouching = touching;
 
-    // Live view periodic updates
     if (g_currentView == VIEW_LIVE && g_modalState == MODAL_NONE) {
         int curMidi = engine.getDetectedMidiNote();
         if (curMidi != g_lastDisplayedMidi || (engine.isPlaying() && engine.getCountdownBeats() > 0)) {
@@ -2464,27 +1690,6 @@ static void esp32LoopTick() {
 
             drawTalometerLEDs();
             drawFooter();
-        }
-    }
-
-    // Instrument Test Screen periodic updates (ONLY runs when VIEW_INST_TEST is active)
-    if (g_currentView == VIEW_INST_TEST && g_modalState == MODAL_NONE) {
-        if (g_testAutoCycle) {
-            if (++g_testAutoTicks >= 48) {
-                g_testAutoTicks = 0;
-                int prevInst = g_testSelectedInst;
-                g_testSelectedInst = (g_testSelectedInst + 1) % SynthEngine::NUM_TRACKS;
-                triggerAndCaptureTestInstrument(g_testSelectedInst);
-                if (getInstTestRects().miniTrig.w > 0) {
-                    drawInstTestHeaderAndButtons();
-                } else {
-                    drawSingleTestInstButton(prevInst);
-                    drawSingleTestInstButton(g_testSelectedInst);
-                }
-            }
-        }
-        if ((++g_testFrameDiv & 1) == 0) {
-            updateInstTestVisualizers();
         }
     }
 }
@@ -2521,10 +1726,6 @@ static void masterAudioTask(void*) {
 
     while (true) {
         engine.renderFramesMono(monoBuf, 256);
-
-        if (engine.isTestScopeEnabled()) {
-            captureTestAudioFrames(monoBuf, 256);
-        }
 
         WifiAudioStreamer::instance().pushMonoSamples(monoBuf, 256);
 
@@ -2574,7 +1775,6 @@ void setup() {
                          g_display.screenWidth() / 2, g_display.screenHeight() / 2);
 
     engine.init(AUDIO_SRATE);
-    loadHarmoniumConfig();
     if (!engine.isTrackMuted(20)) engine.toggleTrackMuted(20); // Mute Shankha
     if (!engine.isTrackMuted(21)) engine.toggleTrackMuted(21); // Mute Shankha 2
     initI2S();
@@ -2609,7 +1809,6 @@ public:
             m_format = dev.preferredFormat();
         }
         engine.init(static_cast<float>(m_format.sampleRate()));
-        loadHarmoniumConfig();
 
         m_sink = new QAudioSink(dev, m_format, this);
         m_sink->setBufferSize(8192);
@@ -2638,10 +1837,6 @@ protected:
 
         m_monoScratch.resize(frames);
         engine.renderFramesMono(m_monoScratch.data(), frames);
-
-        if (engine.isTestScopeEnabled()) {
-            captureTestAudioFrames(m_monoScratch.data(), frames);
-        }
 
         if (isFloat) {
             float* outF = reinterpret_cast<float*>(data);
