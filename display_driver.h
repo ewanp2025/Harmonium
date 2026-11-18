@@ -8,6 +8,10 @@
 #include <cstring>
 #include <cstdint>
 
+#ifndef TFT_ROTATION
+#define TFT_ROTATION 6
+#endif
+
 #ifndef SCREEN_PROFILE
 #define SCREEN_PROFILE 0
 #endif
@@ -300,7 +304,7 @@ public:
             cfg.panel_height = 320;
             cfg.offset_x     = 0;
             cfg.offset_y     = 0;
-            cfg.offset_rotation = 6; 
+            cfg.offset_rotation = TFT_ROTATION; 
             cfg.readable     = true;
             cfg.invert       = false;
             cfg.rgb_order    = false;
@@ -317,7 +321,7 @@ public:
             cfg.y_max      = 3900;
             cfg.pin_int    = TOUCH_SPI_IRQ;
             cfg.bus_shared = true;
-            cfg.offset_rotation = 6;
+            cfg.offset_rotation = TFT_ROTATION;
             cfg.spi_host   = SPI2_HOST;
             cfg.freq       = 2500000;
             cfg.pin_sclk   = TFT_SPI_SCLK;
