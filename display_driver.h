@@ -23,14 +23,7 @@
 #include "buffered_rgb_bus.h"
 #include <driver/i2c.h>
 #else
-// 2.4-inch includes
-#include <lgfx/v1/platforms/esp32s3/Bus_SPI.hpp>
-#include <lgfx/v1/platforms/esp32s3/Touch_XPT2046.hpp>
-#if defined(USE_ST7789) && USE_ST7789
-#include <lgfx/v1/platforms/esp32s3/Panel_ST7789.hpp>
-#else
-#include <lgfx/v1/platforms/esp32s3/Panel_ILI9341.hpp>
-#endif
+// 2.4-inch includes are handled automatically by LovyanGFX.hpp
 #endif
 
 // Default SPI pins for ESP32-S3-DevKitC-1 N16R8 + 2.8" SPI Touch LCD (ILI9341 / ST7789)
