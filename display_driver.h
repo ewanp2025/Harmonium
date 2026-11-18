@@ -300,7 +300,7 @@ public:
             cfg.panel_height = 320;
             cfg.offset_x     = 0;
             cfg.offset_y     = 0;
-            cfg.offset_rotation = 7; 
+            cfg.offset_rotation = 6; 
             cfg.readable     = true;
             cfg.invert       = false;
             cfg.rgb_order    = false;
@@ -317,7 +317,7 @@ public:
             cfg.y_max      = 3900;
             cfg.pin_int    = TOUCH_SPI_IRQ;
             cfg.bus_shared = true;
-            cfg.offset_rotation = 7;
+            cfg.offset_rotation = 6;
             cfg.spi_host   = SPI2_HOST;
             cfg.freq       = 2500000;
             cfg.pin_sclk   = TFT_SPI_SCLK;
