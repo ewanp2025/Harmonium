@@ -37,9 +37,10 @@ Because the Waveshare 7-inch development board used for testing and development 
   * GND: GND
  
   *Pin mapping: Screen*
-  * MOSI (Master Out): GPIO 6
-  * MISO (Master In): GPIO 16
-  * SCLK / SCK (Clock): GPIO 15
+  * MOSI (Master Out): GPIO 11
+  * SCLK / SCK (Clock): GPIO 12
+  * MISO (Master In): GPIO 13
+
  
   * TFT_CS (Chip Select): GPIO 10
   * TFT_DC (Data/Command): GPIO 4
@@ -48,6 +49,11 @@ Because the Waveshare 7-inch development board used for testing and development 
 
   * TOUCH_CS (Touch Chip Select): GPIO 14
   * TOUCH_IRQ (Touch Interrupt): GPIO 21
+
+    * T_DIN (Touch MOSI): GPIO 11 (Shared with TFT SDI)
+   * T_CLK (Touch Clock): GPIO 12 (Shared with TFT SCK)
+   * T_DO (Touch MISO): GPIO 13 (Shared with TFT SDO)
+
 
   * VIN: 5V
   * GND: GND
