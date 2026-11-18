@@ -5,7 +5,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 COMPONENTS Core Gui Widgets Multimedia REQUIRED)
-
 add_executable(HarmoniumEsp32Sim
     main.cpp
     midireader.cpp
