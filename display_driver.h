@@ -273,7 +273,7 @@ public:
             _panel_instance.setTouch(&_touch_instance);
         }
 #else
-        // 2.4" 240*320 SPI ILI9341 / ST7789 + XPT2046 Touch Configuration
+        // 2.8" 320x240 SPI ILI9341 / ST7789 + XPT2046 Touch Configuration
         {
             auto cfg = _bus_instance.config();
             cfg.spi_host   = SPI2_HOST;
@@ -300,16 +300,16 @@ public:
             cfg.panel_height = 320;
             cfg.offset_x     = 0;
             cfg.offset_y     = 0;
-            cfg.offset_rotation = 5; // <-- Change from 1 to 5
+            cfg.offset_rotation = 1; // Landscape 320x240
             cfg.readable     = true;
-            cfg.invert       = true; // <-- Change from false to true
+            cfg.invert       = false;
             cfg.rgb_order    = false;
             cfg.dlen_16bit   = false;
             cfg.bus_shared   = true;
             _panel_instance.config(cfg);
         }
 
-{
+        {
             auto cfg = _touch_instance.config();
             cfg.x_min      = 300;
             cfg.x_max      = 3900;
@@ -317,12 +317,12 @@ public:
             cfg.y_max      = 3900;
             cfg.pin_int    = TOUCH_SPI_IRQ;
             cfg.bus_shared = true;
-            cfg.offset_rotation = 5; // <-- Change from 1 to 5
+            cfg.offset_rotation = 1;
             cfg.spi_host   = SPI2_HOST;
             cfg.freq       = 2500000;
-            // cfg.pin_sclk   = TFT_SPI_SCLK;  (Commented out like we did earlier)
-            // cfg.pin_mosi   = TFT_SPI_MOSI;
-            // cfg.pin_miso   = TFT_SPI_MISO;
+            cfg.pin_sclk   = TFT_SPI_SCLK;
+            cfg.pin_mosi   = TFT_SPI_MOSI;
+            cfg.pin_miso   = TFT_SPI_MISO;
             cfg.pin_cs     = TOUCH_SPI_CS;
             _touch_instance.config(cfg);
             _panel_instance.setTouch(&_touch_instance);
