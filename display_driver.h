@@ -304,6 +304,8 @@ public:
             cfg.pin_busy     = -1;
             cfg.panel_width  = 240;
             cfg.panel_height = 320;
+            cfg.memory_width = 240; 
+            cfg.memory_height= 320; 
             cfg.offset_x     = 0;
             cfg.offset_y     = 0;
             cfg.offset_rotation = TFT_ROTATION; 
