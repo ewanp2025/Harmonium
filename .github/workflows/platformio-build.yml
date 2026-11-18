@@ -43,14 +43,14 @@ jobs:
         cp .pio/build/devkit_spi_28inch_320x240/bootloader.bin dist/devkit_spi_28inch_320x240/bootloader.bin
         ls -lh dist/devkit_spi_28inch_320x240/
 
-    - name: Build & Stage Target 3 (DevKit 2.4-inch ILI9341 + PCM5102)
+    - name: Build & Stage Target 3 (DevKit 2.4-inch ST7789 + PCM5102)
       run: |
-        PLATFORMIO_BUILD_FLAGS="-DSCREEN_PROFILE=1 -DUSE_ST7789=0" pio run -e devkit_spi_24inch_ili9341_pcm5102
-        mkdir -p dist/devkit_spi_24inch_ili9341_pcm5102
-        cp .pio/build/devkit_spi_24inch_ili9341_pcm5102/firmware.bin dist/devkit_spi_24inch_ili9341_pcm5102/firmware.bin
-        cp .pio/build/devkit_spi_24inch_ili9341_pcm5102/partitions.bin dist/devkit_spi_24inch_ili9341_pcm5102/partitions.bin
-        cp .pio/build/devkit_spi_24inch_ili9341_pcm5102/bootloader.bin dist/devkit_spi_24inch_ili9341_pcm5102/bootloader.bin
-        ls -lh dist/devkit_spi_24inch_ili9341_pcm5102/
+        PLATFORMIO_BUILD_FLAGS="-DSCREEN_PROFILE=1 -DUSE_ST7789=1 -DTFT_ROTATION=7" pio run -e devkit_spi_24inch_st7789_pcm5102
+        mkdir -p dist/devkit_spi_24inch_st7789_pcm5102
+        cp .pio/build/devkit_spi_24inch_st7789_pcm5102/firmware.bin dist/devkit_spi_24inch_st7789_pcm5102/firmware.bin
+        cp .pio/build/devkit_spi_24inch_st7789_pcm5102/partitions.bin dist/devkit_spi_24inch_st7789_pcm5102/partitions.bin
+        cp .pio/build/devkit_spi_24inch_st7789_pcm5102/bootloader.bin dist/devkit_spi_24inch_st7789_pcm5102/bootloader.bin
+        ls -lh dist/devkit_spi_24inch_st7789_pcm5102/
 
     - name: Upload Compiled Firmware Artifact (All 3 Folders)
       uses: actions/upload-artifact@v4
