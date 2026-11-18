@@ -417,9 +417,9 @@ public:
                           ? XpressiveParser::parse(trkSpecs[t].o2Str)
                           : nullptr;
 
-            TransferFunctionFX trackTf(m_srate);
-            trackTf.setFormula(trkSpecs[t].tfStr ? trkSpecs[t].tfStr : "");
-            const int fftLatency = (trackTf.enabled && !trackTf.isUsingFastPath())
+auto trackTf = std::make_unique<TransferFunctionFX>(m_srate);
+            trackTf->setFormula(trkSpecs[t].tfStr ? trkSpecs[t].tfStr : "");
+            const int fftLatency = (trackTf->enabled && !trackTf->isUsingFastPath())
                                        ? (TransferFunctionFX::FFT_SIZE - TransferFunctionFX::HOP_SIZE)
                                        : 0;
 
@@ -453,7 +453,7 @@ public:
                 }
 
                 if (trackTf.enabled) {
-                    val = trackTf.process(val);
+                    val = trackTf->process(val);
                 }
 
                 if (s >= fftLatency) {
