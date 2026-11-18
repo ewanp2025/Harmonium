@@ -45,7 +45,7 @@ jobs:
 
     - name: Build & Stage Target 3 (DevKit 2.4-inch ST7789 + PCM5102)
       run: |
-        PLATFORMIO_BUILD_FLAGS="-DSCREEN_PROFILE=1 -DUSE_ST7789=1 -DTFT_ROTATION=6" pio run -e devkit_spi_24inch_st7789_pcm5102
+        PLATFORMIO_BUILD_FLAGS="-DSCREEN_PROFILE=1 -DUSE_ST7789=1" pio run -e devkit_spi_24inch_st7789_pcm5102
         mkdir -p dist/devkit_spi_24inch_st7789_pcm5102
         cp .pio/build/devkit_spi_24inch_st7789_pcm5102/firmware.bin dist/devkit_spi_24inch_st7789_pcm5102/firmware.bin
         cp .pio/build/devkit_spi_24inch_st7789_pcm5102/partitions.bin dist/devkit_spi_24inch_st7789_pcm5102/partitions.bin
