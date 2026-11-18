@@ -1205,8 +1205,8 @@ static void computeTestFft512(const float* timeSamples, float* outMagBins, float
         s_tablesInit = true;
     }
 
-    float re[N];
-    float im[N];
+    static float re[N];
+    static float im[N];
     for (int i = 0; i < N; ++i) {
         re[i] = timeSamples[i] * s_hann[i];
         im[i] = 0.0f;
@@ -1300,7 +1300,7 @@ static void updateInstTestVisualizers() {
     const auto& u = UI();
     const auto r = getInstTestRects();
 
-    float samples[SynthEngine::SCOPE_RING_SIZE];
+    static float samples[SynthEngine::SCOPE_RING_SIZE];
     engine.getScopeSamples(samples, SynthEngine::SCOPE_RING_SIZE);
 
     float liveMaxAbs = 0.0f;
@@ -1326,7 +1326,7 @@ static void updateInstTestVisualizers() {
         g_testVisualDecay *= 0.88f; // Smooth ~500ms visual persistence decay
     }
 
-    float magBins[256];
+    static float magBins[256];
     float peakHz = 0.0f;
     float peakDb = -80.0f;
     computeTestFft512(samples, magBins, peakHz, peakDb);
