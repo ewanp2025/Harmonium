@@ -452,7 +452,7 @@ auto trackTf = std::make_unique<TransferFunctionFX>(m_srate);
                     }
                 }
 
-                if (trackTf.enabled) {
+                if (trackTf->enabled) {
                     val = trackTf->process(val);
                 }
 
