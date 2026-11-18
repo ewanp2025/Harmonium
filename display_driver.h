@@ -273,7 +273,7 @@ public:
             _panel_instance.setTouch(&_touch_instance);
         }
 #else
-        // 2.8" 320x240 SPI ILI9341 / ST7789 + XPT2046 Touch Configuration
+        //// 2.4" 240*320 Touch Configuration 
         {
             auto cfg = _bus_instance.config();
             cfg.spi_host   = SPI2_HOST;
